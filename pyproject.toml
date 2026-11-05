@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ocrtorch"
+version = "0.1.0"
+description = "High-fidelity PyTorch port of PP-OCRv6 for local and TorchTPU fine-tuning"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Ghifary", email = "mghifary@example.com" }
+]
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "numpy>=1.24.0",
+    "Pillow>=9.0.0",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
+
+[project.scripts]
+ocrtorch-convert = "ocrtorch.convert.paddle_to_pt:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
