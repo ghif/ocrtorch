@@ -1,9 +1,10 @@
-"""Unit test for CTCLossStep."""
+"""Unit test for CTCLossStep and EarlyStopping."""
 
 import pytest
 import torch
 
 from ocrtorch.train.loss import CTCLossStep
+from ocrtorch.train.trainer import EarlyStopping
 
 
 def test_ctc_loss_step_computation_and_backward():
@@ -23,3 +24,32 @@ def test_ctc_loss_step_computation_and_backward():
     loss.backward()
     assert logits.grad is not None
     assert logits.grad.shape == logits.shape
+
+
+def test_early_stopping_behavior():
+    stopper = EarlyStopping(patience=3, min_delta=1e-3)
+
+    # Initial score
+    assert stopper.step(0.40) is True
+    assert stopper.should_stop is False
+    assert stopper.counter == 0
+
+    # Improvement
+    assert stopper.step(0.35) is True
+    assert stopper.should_stop is False
+    assert stopper.counter == 0
+
+    # No improvement: 1st time
+    assert stopper.step(0.355) is False
+    assert stopper.counter == 1
+    assert stopper.should_stop is False
+
+    # No improvement: 2nd time
+    assert stopper.step(0.360) is False
+    assert stopper.counter == 2
+    assert stopper.should_stop is False
+
+    # No improvement: 3rd time -> Early stopping triggered!
+    assert stopper.step(0.359) is False
+    assert stopper.counter == 3
+    assert stopper.should_stop is True

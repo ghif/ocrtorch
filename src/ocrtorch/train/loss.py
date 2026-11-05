@@ -1,4 +1,4 @@
-"""CTC loss and training utilities for PyTorch and TorchTPU."""
+"""CTC loss and training utilities for PyTorch, Apple Silicon MPS, and TorchTPU."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import torch.nn as nn
 
 
 class CTCLossStep(nn.Module):
-    """CTC loss step designed for static shapes and TorchTPU / XLA compilation."""
+    """CTC loss step designed for static shapes, Apple Silicon MPS, and TorchTPU / XLA compilation."""
 
     def __init__(self, blank_id: int = 0, zero_infinity: bool = True):
         super().__init__()
@@ -33,4 +33,21 @@ class CTCLossStep(nn.Module):
         """
         # PyTorch CTCLoss expects log_probs of shape [T, B, num_classes]
         log_probs = logits.log_softmax(dim=-1).permute(1, 0, 2)
-        return self.criterion(log_probs, targets, input_lengths, target_lengths)
+
+        # Apple Silicon MPS does not yet natively lower aten::_ctc_loss.
+        # Fallback loss execution to CPU while preserving gradient backprop on MPS.
+        if logits.device.type == "mps":
+            loss = self.criterion(
+                log_probs.cpu(),
+                targets.cpu(),
+                input_lengths.cpu(),
+                target_lengths.cpu(),
+            )
+            return loss.to(logits.device)
+
+        return self.criterion(
+            log_probs,
+            targets.to(logits.device),
+            input_lengths.to(logits.device),
+            target_lengths.to(logits.device),
+        )

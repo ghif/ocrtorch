@@ -26,6 +26,7 @@ dev = [
 
 [project.scripts]
 ocrtorch-convert = "ocrtorch.convert.paddle_to_pt:main"
+ocrtorch-train = "ocrtorch.cli.train:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

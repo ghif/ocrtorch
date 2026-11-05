@@ -4,7 +4,7 @@
 [![Parity: 100%](https://img.shields.io/badge/Paddle--PyTorch%20Parity-40%2F40%20tokens-brightgreen.svg)](#numerical-parity-verification)
 [![TorchTPU Ready](https://img.shields.io/badge/TorchTPU-Ready-blue.svg)](https://pytorch.org/blog/introducing-torchtpu/)
 
-**OCRtorch** is a high-fidelity, modular PyTorch implementation of Baidu's production-grade [PP-OCRv6](https://arxiv.org/abs/2606.13108) text recognition architecture. Developed for the **TorchTPU Sprint**, OCRtorch provides exact mathematical parity against Paddle reference weights, reproducible data preprocessing, and static-sequence compilation design optimized for Google Cloud TPUs via [TorchTPU](https://pytorch.org/blog/introducing-torchtpu/).
+**OCRtorch** is a high-fidelity, modular PyTorch implementation of Baidu's production-grade [PP-OCRv6](https://arxiv.org/abs/2606.13108) text recognition architecture. Developed for the **TorchTPU Sprint**, OCRtorch provides exact mathematical parity against Paddle reference weights, reproducible data preprocessing, early stopping fine-tuning, and static-sequence compilation design optimized for local hardware (CPU & Apple Silicon MPS) and Google Cloud TPUs via [TorchTPU](https://pytorch.org/blog/introducing-torchtpu/).
 
 ---
 
@@ -23,17 +23,6 @@ flowchart LR
     NK --> HD["Linear CTC Head<br/>192 → 18,710 classes<br/>Logits: [B, 40, 18710]"]:::head
     HD --> LS["CTCLossStep<br/>Static Length Alignment"]:::loss
 ```
-
-1. **Backbone (`PPLCNetV4Rec`)**:
-   - Depthwise separable convolutions with residual RepDW connections.
-   - Squeeze-and-Excitation (`F.hardsigmoid` channel recalibration).
-   - Adaptive/valid pooling collapsing height to 1 and width to $T=40$ sequence steps.
-2. **Neck (`LightSVTR`)**:
-   - 1×7 horizontal local depthwise convolution for neighboring stroke context.
-   - 2× global multi-head self-attention blocks (`heads=8, dim=192`) with `prenorm=False` ordering.
-   - Residual skip projection from backbone features.
-3. **Head (`CTCHead`)**:
-   - Linear classification mapping from 192 features to 18,710 vocabulary classes.
 
 ---
 
@@ -63,19 +52,39 @@ OCRtorch was verified against reference activations across all 16 intermediate s
 
 ---
 
-## Quickstart
+## Local Fine-Tuning (CPU & Apple Silicon MPS)
 
-### 1. Installation
+The package includes CLI tooling and shell scripts supporting **Early Stopping** (monitoring validation Character Error Rate) and automatic checkpointing (`best_model.pt` and `latest_model.pt`).
 
-Activate your conda environment and install `ocrtorch` in editable mode:
-
+### Option 1: Apple Silicon GPU (MPS) - Highly Recommended for Mac
+Runs all 34.5M parameters on MPS with transparent CPU CTC loss fallback:
 ```bash
 conda activate torch-env
-cd /Users/mghifary/Work/Code/AI/ocr/ocrtorch
-pip install -e .
+./scripts/finetune-mps.sh
+```
+Or directly via the CLI:
+```bash
+ocrtorch-train \
+  --checkpoint artifacts/ppocrv6_medium_rec.pt \
+  --inference-yaml ~/.paddlex/official_models/PP-OCRv6_medium_rec/inference.yml \
+  --train-manifest ../ocrax/data/manifests/train.jsonl \
+  --val-manifest ../ocrax/data/manifests/validation.jsonl \
+  --output-dir artifacts/checkpoints/finetuned_mps \
+  --device mps \
+  --epochs 20 \
+  --batch-size 8 \
+  --lr 1e-5 \
+  --patience 3
 ```
 
-### 2. Run Parity Tests
+### Option 2: CPU
+```bash
+./scripts/finetune-cpu.sh
+```
+
+---
+
+## Running Unit and Parity Tests
 
 ```bash
 pytest tests/ -v
@@ -87,13 +96,6 @@ pytest tests/ -v
 
 To train or fine-tune PP-OCRv6 on Google Cloud TPUs (`v4`, `v5e`, `v5p`, or `v6e`) using TorchTPU:
 
-### 1. TPU VM Environment Setup
-```bash
-pip install torch_tpu --extra-index-url https://download.pytorch.org/whl/cpu
-pip install -e .
-```
-
-### 2. Targeting the TPU Device
 ```python
 import torch
 import torch_tpu
@@ -122,6 +124,3 @@ loss = criterion(logits, targets, input_lengths, target_lengths)
 loss.backward()
 optimizer.step()
 ```
-
-> [!TIP]
-> **Static Shape Principle for TPUs:** Always keep batch sizes and image dimensions fixed ($[B, 3, 48, 320]$) and use padded label sequences. This ensures OpenXLA compiles the computational graph once, avoiding compilation stalls.
