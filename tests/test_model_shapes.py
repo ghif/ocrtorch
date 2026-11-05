@@ -2,6 +2,7 @@
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from ocrtorch.models.ppocrv6 import PP_OCRv6MediumRec
 
@@ -11,11 +12,10 @@ def test_model_forward_eval_shape():
     model.eval()
     dummy_input = torch.randn(2, 3, 48, 320)
     with torch.no_grad():
-        output = model(dummy_input)
-    # Eval mode returns probabilities
-    assert output.shape == (2, 40, 18710)
-    # Probabilities sum to ~1 along vocabulary axis
-    sums = output.sum(dim=-1)
+        logits = model(dummy_input)
+    assert logits.shape == (2, 40, 18710)
+    probs = F.softmax(logits.float(), dim=-1)
+    sums = probs.sum(dim=-1)
     assert torch.allclose(sums, torch.ones_like(sums), atol=1e-4)
 
 
@@ -24,7 +24,6 @@ def test_model_forward_train_shape():
     model.train()
     dummy_input = torch.randn(2, 3, 48, 320)
     output = model(dummy_input)
-    # Train mode returns raw CTC logits
     assert output.shape == (2, 40, 18710)
 
 

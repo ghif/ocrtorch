@@ -133,7 +133,6 @@ class StemBlock(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stem1(x)
         x2 = self.stem2b(self.stem2a(x))
-        # MaxPool2d(2, stride=1, padding='SAME') in Paddle places 1 pad at right and bottom
         x1 = F.max_pool2d(F.pad(x, (0, 1, 0, 1), value=-float("inf")), kernel_size=2, stride=1)
         return self.stem4(self.stem3(torch.cat([x1, x2], dim=1)))
 
@@ -154,7 +153,7 @@ class SqueezeExcite(nn.Module):
 
 
 class RepDWConv(nn.Module):
-    """Train-time depthwise convolution: 3x3 + 1x1 + identity with BatchNorm."""
+    """Depthwise convolution with residual connection."""
     def __init__(self, channels: int):
         super().__init__()
         self.branch3 = ConvBN(channels, channels, 3, groups=channels)
@@ -278,7 +277,6 @@ class AttentionBlock(nn.Module):
         b, t, d = x.shape
         norm1_x = self.norm1(x)
         qkv = self.qkv(norm1_x).reshape(b, t, 3, self.heads, self.head_dim)
-        # q, k, v shape: [B, H, T, D_h]
         q = qkv[:, :, 0].permute(0, 2, 1, 3)
         k = qkv[:, :, 1].permute(0, 2, 1, 3)
         v = qkv[:, :, 2].permute(0, 2, 1, 3)
@@ -311,12 +309,10 @@ class LightSVTR(nn.Module):
         self.skip_conv = ConvBNActSwish(in_ch, dims, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Input x is NCHW: [B, 768, 1, 40]
         skip = self.skip_conv(x)
         z = self.conv_reduce(x)
         z = z + self.local(z)
         b, c, h, w = z.shape
-        # Reshape to sequence: [B, T, C] where T = h * w = 40
         z = z.permute(0, 2, 3, 1).reshape(b, h * w, c)
         for block in self.blocks:
             z = block(z)
@@ -338,14 +334,11 @@ class PP_OCRv6MediumRec(nn.Module):
         x = self.neck(x)
         sequence = x[:, :, 0, :].permute(0, 2, 1)  # [B, 40, 192]
         logits = self.ctc(sequence)  # [B, 40, num_classes]
-        if self.training:
-            return logits
-        return F.softmax(logits.float(), dim=-1)
+        return logits
 
     def forward_intermediates(self, images_nchw: torch.Tensor) -> dict[str, torch.Tensor]:
         """Return named activations for exact numerical parity diagnosis."""
         values = {}
-        # Backbone stem
         x = self.backbone.conv1(images_nchw)
         values["backbone_stem"] = x
         for stage_name in ("blocks2", "blocks3", "blocks4", "blocks5", "blocks6"):

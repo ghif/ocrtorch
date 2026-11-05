@@ -8,6 +8,7 @@ import time
 from typing import Sequence
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from ocrtorch.data.vocab import ctc_greedy_decode
@@ -55,9 +56,9 @@ class OCRTrainer:
         device: torch.device | str,
         output_dir: Path | str,
         learning_rate: float = 1e-5,
-        weight_decay: float = 1e-4,
+        weight_decay: float = 1e-5,
         patience: int = 3,
-        max_grad_norm: float = 5.0,
+        max_grad_norm: float = 1.0,
     ):
         self.device = torch.device(device)
         self.model = model.to(self.device)
@@ -67,9 +68,12 @@ class OCRTrainer:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        self.freeze_batchnorm()
+
         self.criterion = CTCLossStep().to(self.device)
+        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
         self.optimizer = torch.optim.AdamW(
-            self.model.parameters(),
+            trainable_params,
             lr=learning_rate,
             weight_decay=weight_decay,
         )
@@ -77,8 +81,21 @@ class OCRTrainer:
         self.max_grad_norm = max_grad_norm
         self.history: list[dict] = []
 
+    def freeze_batchnorm(self):
+        """Keep BatchNorm layers frozen in eval mode with untrainable running stats.
+
+        This preserves the fused inference checkpoint initialization from Paddle/OCRax
+        and prevents gradient explosion during fine-tuning.
+        """
+        for m in self.model.modules():
+            if isinstance(m, nn.BatchNorm2d):
+                m.eval()
+                m.weight.requires_grad = False
+                m.bias.requires_grad = False
+
     def train_epoch(self, epoch: int) -> float:
         self.model.train()
+        self.freeze_batchnorm()
         total_loss = 0.0
         num_batches = 0
 
@@ -122,14 +139,13 @@ class OCRTrainer:
             texts = batch["texts"]
 
             logits = self.model(images)
-            # In eval mode model forward returns probabilities
-            # To compute val loss we compute log_softmax
             loss = self.criterion(logits, targets, input_lengths, target_lengths)
             total_loss += loss.item()
             num_batches += 1
 
-            # Decode greedy predictions
-            decoded_texts = ctc_greedy_decode(logits, characters=self.characters)
+            # Decode greedy predictions using softmax probabilities
+            probs = F.softmax(logits.float(), dim=-1)
+            decoded_texts = ctc_greedy_decode(probs, characters=self.characters)
             all_predictions.extend(decoded_texts)
             all_references.extend(texts)
 
@@ -147,6 +163,15 @@ class OCRTrainer:
         print(f"Starting training on device: {self.device} for {epochs} epochs (Early stopping patience: {self.early_stopping.patience})")
         start_time = time.time()
         best_cer = float("inf")
+
+        # Initial zero-shot evaluation
+        init_metrics = self.evaluate()
+        print(
+            f"Zero-shot Pretrained Baseline - Val Loss: {init_metrics['val_loss']:.4f} | "
+            f"CER: {init_metrics['cer']*100:.2f}% | Norm EM: {init_metrics['norm_exact_match']*100:.2f}%"
+        )
+        self.early_stopping.step(init_metrics["cer"])
+        best_cer = init_metrics["cer"]
 
         for epoch in range(1, epochs + 1):
             ep_start = time.time()
