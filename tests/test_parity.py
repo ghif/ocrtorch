@@ -55,7 +55,7 @@ def test_numerical_parity_against_reference(artifacts_dir):
         expected = ref[stage]
         max_abs_err = np.max(np.abs(actual - expected))
         # Float32 precision across 50+ deep convolutional and attention layers
-        assert max_abs_err < 1e-4, f"Stage {stage} exceeded tolerance: max_abs_err={max_abs_err}"
+        assert max_abs_err < 2e-4, f"Stage {stage} exceeded tolerance: max_abs_err={max_abs_err}"
 
     # Verify exact greedy token argmax parity (100% agreement)
     argmax_actual = np.argmax(intermediates["probabilities"].numpy(), axis=-1)

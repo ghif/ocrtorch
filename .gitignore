@@ -35,7 +35,7 @@ venv/
 ENV/
 .DS_Store
 
-# Large checkpoint binaries (keep artifacts folder structure)
-artifacts/*.pt
-artifacts/*.npz
-!artifacts/.gitkeep
+# Data & artifacts (keep artifacts folder structure)
+/data/
+/artifacts/*
+!/artifacts/.gitkeep

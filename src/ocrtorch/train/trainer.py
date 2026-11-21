@@ -215,6 +215,8 @@ class OCRTrainer:
 
         total_time = time.time() - start_time
         summary = {
+            "backend": self.device.type,
+            "device": str(self.device),
             "total_time_seconds": total_time,
             "epochs_run": len(self.history),
             "best_cer": best_cer,

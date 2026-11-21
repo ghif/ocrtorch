@@ -14,17 +14,31 @@ from ocrtorch.train.trainer import OCRTrainer
 
 def get_default_device(requested_device: str) -> torch.device:
     """Resolve compute device based on availability and request."""
-    if requested_device == "mps":
+    if requested_device == "tpu":
+        try:
+            import torch_tpu  # noqa: F401
+            return torch.device("tpu")
+        except Exception as exc:
+            raise RuntimeError(
+                "TorchTPU ('torch_tpu') is not available or TPU device could not be initialized. "
+                "Ensure torch-tpu is installed in your TPU environment."
+            ) from exc
+    elif requested_device == "mps":
         if not torch.backends.mps.is_available():
             raise RuntimeError("MPS device requested but Apple Silicon MPS is not available.")
         return torch.device("mps")
     elif requested_device == "cpu":
         return torch.device("cpu")
     elif requested_device == "auto":
-        if torch.backends.mps.is_available():
-            return torch.device("mps")
-        elif torch.cuda.is_available():
+        try:
+            import torch_tpu  # noqa: F401
+            return torch.device("tpu")
+        except Exception:
+            pass
+        if torch.cuda.is_available():
             return torch.device("cuda")
+        elif torch.backends.mps.is_available():
+            return torch.device("mps")
         return torch.device("cpu")
     return torch.device(requested_device)
 
@@ -36,7 +50,7 @@ def main():
     parser.add_argument("--train-manifest", type=str, required=True, help="Path to train.jsonl manifest")
     parser.add_argument("--val-manifest", type=str, required=True, help="Path to validation.jsonl manifest")
     parser.add_argument("--output-dir", type=str, default="artifacts/checkpoints/finetuned", help="Directory to save checkpoints")
-    parser.add_argument("--device", type=str, default="auto", choices=["auto", "mps", "cpu", "cuda"], help="Compute device")
+    parser.add_argument("--device", type=str, default="auto", choices=["auto", "tpu", "mps", "cpu", "cuda"], help="Compute device")
     parser.add_argument("--epochs", type=int, default=20, help="Maximum epochs")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size per step")
     parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate")
