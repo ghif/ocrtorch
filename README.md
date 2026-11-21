@@ -122,6 +122,36 @@ loss.backward()
 optimizer.step()
 ```
 
+### 4. Cloud TPU Fine-Tuning via Colab CLI
+
+To launch fine-tuning on a Google Colab TPU runtime from your local terminal, ensure:
+1. Cloud dependencies are installed (`pip install -e ".[cloud]"`).
+2. The Google Colab CLI (`colab`) is installed, authenticated, and available on `PATH`.
+3. Google Application Default Credentials are configured (`gcloud auth application-default login`) for GCS access.
+4. Local manifests (`train.jsonl`, `validation.jsonl`, `split_metadata.json`) exist under `data/manifests/` (or pass `--manifests-dir`).
+
+Run `ocrtorch-colab` (supported `--tpu` values: `tpuv6e`, `v6e`, `v6e1`, `v5e1`):
+
+```bash
+ocrtorch-colab \
+  --model-gcs gs://<your-bucket>/model-dir \
+  --dataset-gcs gs://<your-bucket>/dataset-dir \
+  --manifests-dir path/to/manifests \
+  --tpu tpuv6e \
+  --epochs 20 \
+  --batch-size 8 \
+  --lr 1e-5 \
+  --patience 3
+```
+
+Or use the convenience wrapper script:
+
+```bash
+./scripts/finetune-colab-tpu.sh
+```
+
+The launcher provisions a Colab TPU runtime, installs `torch-tpu`, stages the checkpoint and dataset from GCS, runs `ocrtorch-train --device tpu`, uploads checkpoints (`best_model.pt`, `latest_model.pt`, and `training_summary.json`) to `<model-gcs>/finetuned-runs/`, and stops the Colab session on completion.
+
 ---
 
 ## Numerical Parity Verification

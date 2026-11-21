@@ -1,0 +1,13 @@
+gcloud compute instances create tpu-v6e-1-rnd \
+    --zone=europe-west4-a \
+    --machine-type=ct6e-standard-1t \
+    --provisioning-model=FLEX_START \
+    --request-valid-for-duration=2h \
+    --max-run-duration=120h \
+    --instance-termination-action=DELETE \
+    --image-project=ubuntu-os-accelerator-images \
+    --image-family=ubuntu-accel-2204-amd64-tpu-v5e-v5p-v6e \
+    --maintenance-policy=TERMINATE \
+    --disk=name=my-data-disk,device-name=data-disk,mode=rw,boot=no \
+    --scopes=cloud-platform \
+    --metadata-from-file=startup-script=startup.sh
