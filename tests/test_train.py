@@ -53,3 +53,58 @@ def test_early_stopping_behavior():
     assert stopper.step(0.359) is False
     assert stopper.counter == 3
     assert stopper.should_stop is True
+
+
+def test_trainer_saves_clean_state_dict_with_compile_and_autocast(tmp_path):
+    from torch.utils.data import DataLoader, TensorDataset
+    from ocrtorch.train.trainer import OCRTrainer
+
+    class TinyOCR(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.bn = torch.nn.BatchNorm2d(3)
+            self.head = torch.nn.Linear(3, 5)
+
+        def forward(self, x):
+            # [B, 3, H, W] -> [B, 40, 5]
+            pooled = self.bn(x).mean(dim=(2, 3)).unsqueeze(1).expand(-1, 40, -1)
+            return self.head(pooled)
+
+    class DictLoader:
+        def __init__(self, batch):
+            self.batch = batch
+
+        def __iter__(self):
+            yield self.batch
+
+        def __len__(self):
+            return 1
+
+    batch = {
+        "images": torch.randn(2, 3, 8, 8),
+        "targets": torch.tensor([[1, 2, 0, 0], [2, 1, 0, 0]], dtype=torch.long),
+        "input_lengths": torch.tensor([40, 40], dtype=torch.long),
+        "target_lengths": torch.tensor([2, 2], dtype=torch.long),
+        "texts": ["ab", "ba"],
+    }
+    loader = DictLoader(batch)
+    model = TinyOCR()
+    trainer = OCRTrainer(
+        model=model,
+        train_loader=loader,  # type: ignore[arg-type]
+        val_loader=loader,  # type: ignore[arg-type]
+        characters=["a", "b", "c", "d"],
+        device="cpu",
+        output_dir=tmp_path,
+        learning_rate=1e-4,
+        compile_backend="eager",
+        amp_dtype=torch.bfloat16,
+        warmup_epochs=1,
+        min_lr=1e-5,
+    )
+    summary = trainer.fit(epochs=2)
+    assert summary["epochs_run"] == 2
+    assert summary["history"][0]["lr"] == pytest.approx(1e-4)
+    assert summary["history"][1]["lr"] == pytest.approx(1e-4)
+    saved = torch.load(tmp_path / "latest_model.pt", weights_only=True)
+    assert all(not k.startswith("_orig_mod.") for k in saved.keys())

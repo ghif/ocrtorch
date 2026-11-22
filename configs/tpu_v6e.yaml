@@ -1,0 +1,11 @@
+device: tpu
+bf16: true
+epochs: 40
+batch_size: 64
+lr: 4.0e-5
+warmup_epochs: 3
+min_lr: 1.0e-6
+patience: 8
+num_workers: 4
+max_target_len: 40
+drop_last: true

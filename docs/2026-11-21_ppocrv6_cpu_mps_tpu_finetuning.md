@@ -358,3 +358,47 @@ Table 5 summarizes the end-to-end fine-tuning results across all three backends 
 3. Graves, A., Fernández, S., Gomez, F., & Schmidhuber, J. (2006). *Connectionist Temporal Classification: Labelling Unsegmented Sequence Data with Recurrent Neural Networks*. ICML.
 4. PyTorch & Google Cloud. *Introducing TorchTPU: Native PyTorch Backend for Google Cloud TPUs*. https://pytorch.org/blog/introducing-torchtpu/
 5. RxHandBD: *A Handwritten Prescription Word Image Dataset*. Mendeley Data, DOI: 10.17632/dsb5r6vskg.3.
+
+---
+
+## Addendum: Live TorchTPU Fine-Tuning on Google Cloud TPU VM (`v6e-1`, Batch Size 32)
+
+Following the Colab `v5e1` (`batch_size=8`) benchmark above, we ran a dedicated TorchTPU fine-tuning run directly on a provisioned Google Cloud TPU VM (`ct6e-standard-1t`, single **TPU `v6e-1`** chip) using the `torch-env` conda environment.
+
+### Environment & Configuration
+- **Hardware / VM:** Google Cloud `ct6e-standard-1t` (`v6e-1` TPU)
+- **Runtime:** Python `3.13.14`, PyTorch `2.15.0+cpu`, `torch-tpu 0.3.0`, `libtpu 0.0.53.1` (PJRT API `0.117`)
+- **Dataset Split:** RxHandBD `Train_Label.csv` only (`seed=42`, 85%/15% split) — **3,794 training crops** and **669 validation crops**
+- **Training Hyperparameters:** `--device tpu --epochs 20 --batch-size 32 --lr 2e-5 --patience 4 --num-workers 4` (`119` steps/epoch)
+- **Pretrained Checkpoint:** `gs://handnotes-ocr/model-dir/ppocrv6_medium_rec.pt`
+
+### Zero-Shot Baseline & Per-Epoch Results
+Before Epoch 1, the zero-shot pretrained baseline scored **2.0827** validation loss, **32.11%** CER, and **27.80%** Normalized Exact Match on the 669 validation crops. Fine-tuning on `v6e-1` completed **15 epochs in 274.7 seconds (~4.58 minutes)** before early stopping triggered at Epoch 15 (Table 6).
+
+| Epoch | Train Loss | Val Loss | Val CER | Norm Exact Match | Time (s) | Checkpoint Status |
+| :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| 1 | 1.1609 | 0.9838 | 22.38% | 38.57% | 85.6 | Best *(includes XLA compile)* |
+| 2 | 0.8486 | 0.9679 | 25.23% | 28.25% | 13.4 | Patience 1/4 |
+| 3 | 0.7387 | 0.8185 | 19.01% | 45.74% | 12.4 | Best |
+| 4 | 0.5983 | **0.6884** | 16.75% | 48.28% | 11.2 | Best |
+| 5 | 0.5193 | 0.8080 | 18.41% | 44.25% | 11.6 | Patience 1/4 |
+| 6 | 0.4600 | 0.6891 | 15.30% | 52.77% | 11.5 | Best |
+| 7 | 0.3753 | 0.7063 | 15.82% | 51.42% | 11.8 | Patience 1/4 |
+| 8 | 0.3200 | 0.7766 | 17.50% | 42.75% | 12.9 | Patience 2/4 |
+| 9 | 0.2865 | 0.7574 | 15.45% | 51.87% | 13.1 | Patience 3/4 |
+| 10 | 0.2371 | 0.7809 | 15.00% | 51.57% | 11.6 | Best |
+| **11** | **0.2075** | 0.8191 | **14.70%** | **54.56%** | 11.8 | **Best (Selected)** |
+| 12 | 0.1873 | 0.7972 | 14.93% | **55.01%** | 11.9 | Patience 1/4 |
+| 13 | 0.1574 | 0.8282 | 14.76% | 53.96% | 12.0 | Patience 2/4 |
+| 14 | 0.1438 | 0.8350 | 15.11% | 52.77% | 11.5 | Patience 3/4 |
+| 15 | 0.1321 | 0.8696 | 14.74% | 54.11% | 11.6 | Early Stop (4/4) |
+
+*Table 6: Validation and training metrics across 15 epochs of RxHandBD fine-tuning on Google Cloud TPU `v6e-1` (`batch_size=32`, `lr=2e-5`, `patience=4`).*
+
+### Key Observations & Artifacts
+- **2.4× faster steady-state epochs than `v5e1` (`batch_size=8`), 7.4× faster than M4 Pro MPS:** Epoch 1 took `85.6s` (initial StableHLO/XLA graph compilation), after which Epochs 2–15 averaged **`11.95s` per epoch** (`11.2s`–`13.4s`).
+- **XLA compilation cache efficiency:** The compilation cache recorded **1,197,851** cache requests with **1,197,126 hits (99.9%)**, **725** compilations, and **0** unbounded dynamic hits.
+- **Note on `libtcmalloc`:** `libtcmalloc_minimal.so.4` was not installed on this VM image, so TorchTPU logged its standard `TcMalloc` warning; installing `libtcmalloc-minimal4` and preloading it could reduce host allocation overhead further.
+- **Saved & Uploaded Checkpoints:**
+  - Local: `artifacts/checkpoints/finetuned_tpu_v6e/` (`best_model.pt`, `latest_model.pt`, `training_summary.json`, `train.log`)
+  - GCS: `gs://handnotes-ocr/model-dir/finetuned-runs/ppocrv6-rxhandbd-tpu-v6e-20261121T1403Z/`

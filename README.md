@@ -64,22 +64,18 @@ ocrtorch-convert --input path/to/weights.npz --output artifacts/ppocrv6_medium_r
 
 ### 2. Local Fine-Tuning (CPU & Apple Silicon MPS)
 
-The training CLI supports validation CER monitoring, automatic checkpointing (`best_model.pt` and `latest_model.pt`), and early stopping.
+The training CLI supports YAML configuration presets (`--config`, with CLI flags overriding YAML values), validation CER monitoring, automatic checkpointing (`best_model.pt` and `latest_model.pt`), linear warmup + cosine LR decay, and early stopping.
 
 Run on Apple Silicon MPS (with CPU fallback for `nn.CTCLoss`):
 
 ```bash
 ocrtorch-train \
+  --config configs/local_mps.yaml \
   --checkpoint artifacts/ppocrv6_medium_rec.pt \
   --inference-yaml path/to/inference.yml \
   --train-manifest path/to/train.jsonl \
   --val-manifest path/to/validation.jsonl \
-  --output-dir artifacts/checkpoints/finetuned_mps \
-  --device mps \
-  --epochs 20 \
-  --batch-size 8 \
-  --lr 1e-5 \
-  --patience 3
+  --output-dir artifacts/checkpoints/finetuned_mps
 ```
 
 Convenience wrapper scripts are also available in `scripts/`:
@@ -87,37 +83,48 @@ Convenience wrapper scripts are also available in `scripts/`:
 ```bash
 ./scripts/finetune-mps.sh   # Apple Silicon MPS
 ./scripts/finetune-cpu.sh   # Multi-core CPU
+./scripts/finetune-tpu-vm.sh  # Google Cloud TPU VM (uses configs/tpu_v6e.yaml)
 ```
 
 ### 3. TorchTPU Execution
 
-On Google Cloud TPUs (`v4`, `v5e`, `v5p`, or `v6e`) with `torch_tpu` installed, target `torch.device("tpu")` directly:
+On Google Cloud TPUs (`v4`, `v5e`, `v5p`, or `v6e`) with `torch_tpu` installed, `ocrtorch-train --device tpu` automatically enables **hybrid `bfloat16` autocast** (keeping `float32` master weights and AdamW states while running `Conv2d`/`Linear` ops in `bfloat16`), static target padding (`--max-target-len 40`), and `drop_last=True`:
+
+```bash
+ocrtorch-train \
+  --config configs/tpu_v6e.yaml \
+  --checkpoint artifacts/ppocrv6_medium_rec.pt \
+  --inference-yaml path/to/inference.yml \
+  --train-manifest path/to/train.jsonl \
+  --val-manifest path/to/validation.jsonl \
+  --output-dir artifacts/checkpoints/finetuned_tpu_v6e
+```
+
+Or in Python directly with `torch.device("tpu")` and `torch.autocast("tpu", dtype=torch.bfloat16)`:
 
 ```python
 import torch
-import torch_tpu
+import torch_tpu  # noqa: F401
 from ocrtorch.models.ppocrv6 import PP_OCRv6MediumRec
 from ocrtorch.train.loss import CTCLossStep
 
-# 1. Select the native TPU device
+# 1. Select the native TPU device (float32 master weights)
 device = torch.device("tpu")
-
-# 2. Instantiate and compile the model
 model = PP_OCRv6MediumRec().to(device)
-compiled_model = torch.compile(model, backend="openxla")
 
-# 3. Configure optimizer and static-shape CTC loss
-optimizer = torch.optim.AdamW(compiled_model.parameters(), lr=1e-4)
+# 2. Configure optimizer and static-shape float32 CTC loss
+optimizer = torch.optim.AdamW(model.parameters(), lr=4e-5)
 criterion = CTCLossStep().to(device)
 
-# 4. Forward and backward pass with static shapes
-images = torch.randn(16, 3, 48, 320, device=device)
-targets = torch.randint(1, 18700, (16, 20), device=device)
-input_lengths = torch.full((16,), 40, dtype=torch.long, device=device)
-target_lengths = torch.full((16,), 20, dtype=torch.long, device=device)
+# 3. Hybrid bfloat16 autocast forward + float32 CTC loss & backward
+images = torch.randn(64, 3, 48, 320, device=device)
+targets = torch.randint(1, 18700, (64, 40), dtype=torch.long)
+input_lengths = torch.full((64,), 40, dtype=torch.long)
+target_lengths = torch.full((64,), 20, dtype=torch.long)
 
-logits = compiled_model(images)
-loss = criterion(logits, targets, input_lengths, target_lengths)
+with torch.autocast("tpu", dtype=torch.bfloat16):
+    logits = model(images)
+loss = criterion(logits.float(), targets, input_lengths, target_lengths)
 loss.backward()
 optimizer.step()
 ```

@@ -33,3 +33,8 @@ def test_ocr_dataset_and_collate(tmp_path):
     assert batch["targets"].shape == (2, 2)
     assert torch.equal(batch["input_lengths"], torch.tensor([40, 40]))
     assert torch.equal(batch["target_lengths"], torch.tensor([2, 2]))
+
+    static_batch = ocr_collate_fn([item, item], max_target_len=40)
+    assert static_batch["targets"].shape == (2, 40)
+    assert torch.equal(static_batch["targets"][:, :2], batch["targets"])
+    assert torch.all(static_batch["targets"][:, 2:] == 0)

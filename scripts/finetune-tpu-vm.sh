@@ -17,12 +17,6 @@ if [[ -z "${VIRTUAL_ENV:-}" && -d "${VENV_DIR}" ]]; then
   source "${VENV_DIR}/bin/activate"
 fi
 
-# TorchTPU recommends preloading libtcmalloc to avoid glibc ptmalloc contention on the host.
-TCMALLOC_LIB="/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4"
-if [[ -z "${LD_PRELOAD:-}" && -f "${TCMALLOC_LIB}" ]]; then
-  export LD_PRELOAD="${TCMALLOC_LIB}"
-fi
-
 CHECKPOINT_PATH="${TPU_DATA_DIR}/model-dir/ppocrv6_medium_rec.pt"
 INFERENCE_YAML="${TPU_DATA_DIR}/model-dir/inference.yml"
 TRAIN_MANIFEST="${TPU_DATA_DIR}/manifests/train.jsonl"
@@ -38,16 +32,12 @@ done
 
 echo "=== Starting PP-OCRv6 Fine-Tuning on TPU VM with TorchTPU ==="
 ocrtorch-train \
+  --config "${REPO_ROOT}/configs/tpu_v6e.yaml" \
   --checkpoint "${CHECKPOINT_PATH}" \
   --inference-yaml "${INFERENCE_YAML}" \
   --train-manifest "${TRAIN_MANIFEST}" \
   --val-manifest "${VAL_MANIFEST}" \
   --output-dir "${OUTPUT_DIR}" \
-  --device tpu \
-  --epochs 20 \
-  --batch-size 8 \
-  --lr 1e-5 \
-  --patience 3 \
   "$@"
 
 if [[ -n "${OUTPUT_GCS}" ]]; then

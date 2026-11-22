@@ -275,19 +275,19 @@ class AttentionBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, t, d = x.shape
-        norm1_x = self.norm1(x)
+        norm1_x = self.norm1(x.to(self.norm1.weight.dtype))
         qkv = self.qkv(norm1_x).reshape(b, t, 3, self.heads, self.head_dim)
         q = qkv[:, :, 0].permute(0, 2, 1, 3)
         k = qkv[:, :, 1].permute(0, 2, 1, 3)
         v = qkv[:, :, 2].permute(0, 2, 1, 3)
 
         attn = torch.matmul(q * self.scale, k.transpose(-2, -1))
-        attn = F.softmax(attn.float(), dim=-1).to(x.dtype)
+        attn = F.softmax(attn.float(), dim=-1).to(v.dtype)
         attn = self.attn_dropout(attn)
 
         y = torch.matmul(attn, v).permute(0, 2, 1, 3).reshape(b, t, d)
         x = x + self.drop1(self.proj(y))
-        y = F.silu(self.fc1(self.norm2(x)))
+        y = F.silu(self.fc1(self.norm2(x.to(self.norm2.weight.dtype))))
         y = self.drop2(y)
         y = self.fc2(y)
         return x + self.drop3(y)
@@ -316,7 +316,7 @@ class LightSVTR(nn.Module):
         z = z.permute(0, 2, 3, 1).reshape(b, h * w, c)
         for block in self.blocks:
             z = block(z)
-        z = self.norm(z).reshape(b, h, w, c).permute(0, 3, 1, 2)
+        z = self.norm(z.to(self.norm.weight.dtype)).reshape(b, h, w, c).permute(0, 3, 1, 2)
         return z + skip
 
 

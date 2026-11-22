@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+from functools import partial
 from pathlib import Path
+from typing import Sequence
 import torch
 from torch.utils.data import DataLoader
+import yaml
 
 from ocrtorch.data.dataset import OCRDataset, load_character_table, ocr_collate_fn
 from ocrtorch.models.ppocrv6 import PP_OCRv6MediumRec
@@ -43,8 +46,10 @@ def get_default_device(requested_device: str) -> torch.device:
     return torch.device(requested_device)
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """Create CLI argument parser for PP-OCRv6 fine-tuning."""
     parser = argparse.ArgumentParser(description="Fine-tune PP-OCRv6 with PyTorch on CPU, MPS, or TPU")
+    parser.add_argument("--config", type=str, default=None, help="Optional YAML config file (CLI flags override)")
     parser.add_argument("--checkpoint", type=str, default="artifacts/ppocrv6_medium_rec.pt", help="Pretrained .pt checkpoint")
     parser.add_argument("--inference-yaml", type=str, required=True, help="Path to Paddle inference.yml for character dict")
     parser.add_argument("--train-manifest", type=str, required=True, help="Path to train.jsonl manifest")
@@ -56,10 +61,84 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate")
     parser.add_argument("--patience", type=int, default=3, help="Early stopping patience in epochs")
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader worker processes")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--compile-backend",
+        type=str,
+        default=None,
+        help="Optional torch.compile backend (e.g. 'tpu' or 'inductor'; disabled by default)",
+    )
+    parser.add_argument(
+        "--bf16",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Use hybrid bfloat16 autocast with float32 master weights (defaults to enabled on TPU)",
+    )
+    parser.add_argument("--warmup-epochs", type=int, default=2, help="Linear LR warmup epochs")
+    parser.add_argument("--min-lr", type=float, default=1e-6, help="Minimum cosine-annealed learning rate")
+    parser.add_argument(
+        "--max-target-len",
+        type=int,
+        default=None,
+        help="Pad targets to fixed static length (defaults to 40 on TPU; 0 disables)",
+    )
+    parser.add_argument(
+        "--drop-last",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Drop trailing partial batch in train DataLoader (defaults to enabled on TPU)",
+    )
+    return parser
 
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse CLI arguments with optional YAML config defaults (CLI overrides YAML)."""
+    parser = build_parser()
+    known, _ = parser.parse_known_args(argv)
+    if known.config:
+        cfg_path = Path(known.config)
+        with cfg_path.open("r", encoding="utf-8") as f:
+            raw_cfg = yaml.safe_load(f) or {}
+        if not isinstance(raw_cfg, dict):
+            raise ValueError(f"Config file must contain a YAML mapping: {cfg_path}")
+        valid_dests = {action.dest for action in parser._actions} - {"help", "config"}
+        unknown_keys = sorted(set(raw_cfg.keys()) - valid_dests)
+        if unknown_keys:
+            raise ValueError(f"Unknown config key(s) in {cfg_path}: {', '.join(unknown_keys)}")
+        parser.set_defaults(**raw_cfg)
+    return parser.parse_args(argv)
+
+
+def resolve_runtime_options(args: argparse.Namespace, device: torch.device) -> dict:
+    """Resolve backend-dependent runtime options (hybrid bf16, static shapes, drop_last)."""
+    is_tpu = device.type == "tpu"
+    compile_backend = args.compile_backend if (args.compile_backend and args.compile_backend.lower() != "none") else None
+    use_bf16 = args.bf16 if args.bf16 is not None else is_tpu
+    amp_dtype = torch.bfloat16 if use_bf16 else None
+    max_target_len = args.max_target_len if args.max_target_len is not None else (40 if is_tpu else None)
+    if max_target_len == 0:
+        max_target_len = None
+    drop_last = args.drop_last if args.drop_last is not None else is_tpu
+    return {
+        "compile_backend": compile_backend,
+        "amp_dtype": amp_dtype,
+        "max_target_len": max_target_len,
+        "drop_last": drop_last,
+    }
+
+
+def main():
+    args = parse_args()
     device = get_default_device(args.device)
-    print(f"Using device: {device}")
+    opts = resolve_runtime_options(args, device)
+    compile_backend = opts["compile_backend"]
+    amp_dtype = opts["amp_dtype"]
+    max_target_len = opts["max_target_len"]
+    drop_last = opts["drop_last"]
+
+    print(
+        f"Using device: {device} | compile_backend={compile_backend} | "
+        f"amp_dtype={amp_dtype} | max_target_len={max_target_len} | drop_last={drop_last}"
+    )
 
     # Load character dictionary
     print(f"Loading vocabulary from {args.inference_yaml}...")
@@ -73,19 +152,27 @@ def main():
     val_dataset = OCRDataset(args.val_manifest, char_to_id, augment=False)
     print(f"Dataset sizes: {len(train_dataset)} training crops, {len(val_dataset)} validation crops")
 
+    collate_fn = partial(ocr_collate_fn, max_target_len=max_target_len) if max_target_len else ocr_collate_fn
+    loader_kwargs = {
+        "num_workers": args.num_workers,
+        "collate_fn": collate_fn,
+    }
+    if args.num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 4
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=ocr_collate_fn,
-        num_workers=args.num_workers,
+        drop_last=drop_last,
+        **loader_kwargs,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        collate_fn=ocr_collate_fn,
-        num_workers=args.num_workers,
+        **loader_kwargs,
     )
 
     # Initialize model
@@ -109,6 +196,10 @@ def main():
         output_dir=args.output_dir,
         learning_rate=args.lr,
         patience=args.patience,
+        compile_backend=compile_backend,
+        amp_dtype=amp_dtype,
+        warmup_epochs=args.warmup_epochs,
+        min_lr=args.min_lr,
     )
 
     trainer.fit(epochs=args.epochs)

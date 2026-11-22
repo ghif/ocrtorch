@@ -64,8 +64,12 @@ class OCRDataset(Dataset):
         with Image.open(image_path) as im:
             image = im.convert("RGB")
             if self.augment:
+                angle = self.rng.uniform(-2.0, 2.0)
+                if abs(angle) > 0.1:
+                    image = image.rotate(angle, resample=Image.Resampling.BILINEAR, fillcolor=(255, 255, 255))
                 image = ImageEnhance.Brightness(image).enhance(self.rng.uniform(0.9, 1.1))
                 image = ImageEnhance.Contrast(image).enhance(self.rng.uniform(0.9, 1.1))
+                image = ImageEnhance.Sharpness(image).enhance(self.rng.uniform(0.8, 1.2))
 
             tensor_chw, valid_w = resize_rec_image(image)
 
@@ -85,14 +89,15 @@ class OCRDataset(Dataset):
         }
 
 
-def ocr_collate_fn(batch: list[dict]) -> dict:
+def ocr_collate_fn(batch: list[dict], max_target_len: int | None = None) -> dict:
     """Collate batch into padded tensors ready for CTCLoss and TorchTPU."""
     images = torch.stack([item["image"] for item in batch], dim=0)
     texts = [item["text"] for item in batch]
     token_lists = [item["token_ids"] for item in batch]
 
     target_lengths = torch.tensor([len(tokens) for tokens in token_lists], dtype=torch.long)
-    max_len = max(1, target_lengths.max().item())
+    batch_max = max(1, target_lengths.max().item())
+    max_len = max(batch_max, max_target_len) if max_target_len is not None else batch_max
 
     targets = torch.zeros((len(batch), max_len), dtype=torch.long)
     for i, tokens in enumerate(token_lists):
