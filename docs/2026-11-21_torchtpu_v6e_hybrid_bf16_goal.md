@@ -59,6 +59,9 @@ We resolved the root cause cleanly in [`ppocrv6.py`](file:///mnt/data/ocrtorch/s
 | **TPU `v6e-1` Baseline** | `fp32` | 32 | Constant `2e-5` | `11.95s` | `274.7s` *(15 ep)* | `14.70%` | `54.56%` |
 | **TPU `v6e-1` Speed-Opt** | Pure `bf16` | 64 | Constant `3e-5` | **`3.81s`** | **`115.1s`** *(20 ep)* | `15.69%` | `51.87%` |
 | **TPU `v6e-1` Accuracy-Opt** | `fp32` | 16 | Warmup + Cosine `2e-5→1e-6` | `8.80s` | `289.2s` *(25 ep)* | `12.97%` | `59.19%` |
+| **M4 Pro CPU Hybrid** | `autocast(bf16)` + `fp32` master | 64 | Warmup + Cosine `4e-5→1e-6` | `6,061.1s` *(Ep 1)* | `~67.3h` *(proj. 40 ep)* | `23.28%` *(Ep 1)* | `34.98%` *(Ep 1)* |
+| **M4 Pro MPS Hybrid** | **`autocast(bf16)` + `fp32` master** | **64** | **Warmup + Cosine `4e-5→1e-6`** | **`64.36s`** | **`2,640.5s`** *(40 ep)* | **`11.67%`** *(Ep 38)* | **`61.73%`** *(Ep 38, peak 61.88% Ep 34)* |
+| **Colab TPU `v5e1` Hybrid** | **`autocast(bf16)` + `fp32` master** | **64** | **Warmup + Cosine `4e-5→1e-6`** | **`9.09s`** | **`404.8s`** *(40 ep)* | **`11.15%`** *(Ep 40)* | **`62.63%`** *(Ep 40, peak 62.78% Ep 38)* |
 | **TPU `v6e-1` Hybrid (Goal)** | **`autocast(bf16)` + `fp32` master** | **64** | **Warmup + Cosine `4e-5→1e-6`** | **`4.99s`** | **`249.3s`** *(40 ep)* | **`12.32%`** *(Ep 32)* | **`61.29%`** *(Ep 32)* |
 
 - **XLA compilation cache:** `2,521,981` cache requests, `2,521,423` hits (**99.9%**), `558` compilations, and `0` unbounded dynamic hits.
@@ -66,5 +69,7 @@ We resolved the root cause cleanly in [`ppocrv6.py`](file:///mnt/data/ocrtorch/s
 ---
 
 ## Artifacts
-- **Local:** [`artifacts/checkpoints/finetuned_tpu_v6e_hybrid_bs64/`](file:///mnt/data/ocrtorch/artifacts/checkpoints/finetuned_tpu_v6e_hybrid_bs64/training_summary.json) (`best_model.pt`, `latest_model.pt`, `training_summary.json`, `train.log`)
-- **GCS:** `gs://handnotes-ocr/model-dir/finetuned-runs/ppocrv6-rxhandbd-tpu-v6e-hybrid-bs64-20261121T2332Z/`
+- **Local (`v6e-1`):** [`artifacts/checkpoints/finetuned_tpu_v6e_hybrid_bs64/`](file:///mnt/data/ocrtorch/artifacts/checkpoints/finetuned_tpu_v6e_hybrid_bs64/training_summary.json) (`best_model.pt`, `latest_model.pt`, `training_summary.json`, `train.log`)
+- **Local (`M4 Pro MPS` Hybrid):** `artifacts/checkpoints/finetuned_mps_hybrid_bs64/training_summary.json` (`best_model.pt`, `latest_model.pt`, `training_summary.json`)
+- **GCS (`v6e-1`):** `gs://handnotes-ocr/model-dir/finetuned-runs/ppocrv6-rxhandbd-tpu-v6e-hybrid-bs64-20261121T2332Z/`
+- **GCS (`v5e1`):** `gs://handnotes-ocr/model-dir/finetuned-runs/ppocrv6-rxhandbd-20261122T111401990025Z/`

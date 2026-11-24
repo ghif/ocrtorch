@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 import json
 from pathlib import Path
 import random
@@ -9,7 +10,7 @@ from typing import Sequence
 import numpy as np
 from PIL import Image, ImageEnhance
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, WeightedRandomSampler
 import yaml
 
 from ocrtorch.data.images import resize_rec_image
@@ -114,3 +115,37 @@ def ocr_collate_fn(batch: list[dict], max_target_len: int | None = None) -> dict
         "target_lengths": target_lengths,
         "texts": texts,
     }
+
+
+def build_field_balanced_sampler(
+    rows: Sequence[dict[str, str]],
+    alpha: float = 0.5,
+    seed: int = 42,
+) -> WeightedRandomSampler:
+    """Create a WeightedRandomSampler that upweights minority fields by N_field^(-alpha)."""
+    if not rows:
+        raise ValueError("Cannot build sampler from empty rows")
+    fields = [row.get("field", "__default__") for row in rows]
+    counts = Counter(fields)
+    weights = [float(counts[f]) ** (-alpha) for f in fields]
+    generator = torch.Generator().manual_seed(seed)
+    return WeightedRandomSampler(
+        weights=weights,
+        num_samples=len(rows),
+        replacement=True,
+        generator=generator,
+    )
+
+
+def collect_active_token_ids(
+    rows: Sequence[dict[str, str]],
+    char_to_id: dict[str, int],
+    include_blank: bool = True,
+) -> set[int]:
+    """Collect vocabulary token IDs present in manifest texts (plus blank=0 by default)."""
+    active: set[int] = {0} if include_blank else set()
+    for row in rows:
+        for ch in row.get("text", ""):
+            if ch in char_to_id:
+                active.add(char_to_id[ch])
+    return active

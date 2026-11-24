@@ -171,6 +171,9 @@ class ColabRemoteTests(unittest.TestCase):
                 staged_source = root / "content/handnotes-ocr/src/ocrtorch/cli/train.py"
                 self.assertEqual(staged_source.read_bytes(), b"# staged source\n")
                 run_command.assert_called_once()
+                pip_cmd = run_command.call_args.args[0]
+                self.assertIn("--extra-index-url", pip_cmd)
+                self.assertIn("https://download.pytorch.org/whl/cpu", pip_cmd)
             finally:
                 colab_remote.CONTENT_DIR = previous_content_dir
 
@@ -217,13 +220,22 @@ class ColabRemoteTests(unittest.TestCase):
                     "model_gcs": "gs://models/base",
                     "checkpoint_gcs": "gs://models/base/ppocrv6_medium_rec.pt",
                     "epochs": 1,
+                    "batch_size": 64,
+                    "lr": 4e-5,
+                    "warmup_epochs": 3,
+                    "min_lr": 1e-6,
+                    "patience": 8,
+                    "num_workers": 4,
+                    "max_target_len": 40,
+                    "bf16": True,
+                    "drop_last": True,
                 })
                 self.assertEqual(result["status"], "trained")
                 self.assertEqual(result["backend"], "tpu")
                 self.assertEqual(run_training.call_count, 1)
                 cmd = run_training.call_args.args[0]
-                self.assertIn("--device", cmd)
-                self.assertIn("tpu", cmd)
+                for flag in ("--device", "tpu", "--bf16", "--warmup-epochs", "3", "--num-workers", "4", "--drop-last"):
+                    self.assertIn(flag, cmd)
             finally:
                 colab_remote.INPUTS_DIR, colab_remote.OUTPUT_DIR = previous_inputs, previous_output
 

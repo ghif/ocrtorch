@@ -10,7 +10,13 @@ import torch
 from torch.utils.data import DataLoader
 import yaml
 
-from ocrtorch.data.dataset import OCRDataset, load_character_table, ocr_collate_fn
+from ocrtorch.data.dataset import (
+    OCRDataset,
+    build_field_balanced_sampler,
+    collect_active_token_ids,
+    load_character_table,
+    ocr_collate_fn,
+)
 from ocrtorch.models.ppocrv6 import PP_OCRv6MediumRec
 from ocrtorch.train.trainer import OCRTrainer
 
@@ -87,6 +93,42 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Drop trailing partial batch in train DataLoader (defaults to enabled on TPU)",
     )
+    parser.add_argument(
+        "--freeze-backbone",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Freeze PPLCNetV4Rec backbone weights during fine-tuning",
+    )
+    parser.add_argument(
+        "--backbone-lr-scale",
+        type=float,
+        default=1.0,
+        help="Learning rate multiplier for backbone parameters when unfrozen (e.g. 0.1)",
+    )
+    parser.add_argument(
+        "--l2-sp-weight",
+        type=float,
+        default=0.0,
+        help="L2-SP regularization weight anchoring parameters to pretrained checkpoint",
+    )
+    parser.add_argument(
+        "--protect-unseen-ctc",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Zero CTC head gradients for character IDs absent from the training manifest",
+    )
+    parser.add_argument(
+        "--balance-fields",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use field-balanced WeightedRandomSampler when manifest rows include a 'field' key",
+    )
+    parser.add_argument(
+        "--balance-alpha",
+        type=float,
+        default=0.5,
+        help="Inverse-frequency exponent for field-balanced sampling (0=uniform, 1=full inverse)",
+    )
     return parser
 
 
@@ -161,10 +203,18 @@ def main():
         loader_kwargs["persistent_workers"] = True
         loader_kwargs["prefetch_factor"] = 4
 
+    sampler = None
+    shuffle = True
+    if args.balance_fields:
+        sampler = build_field_balanced_sampler(train_dataset.rows, alpha=args.balance_alpha)
+        shuffle = False
+        print(f"Field-balanced sampling enabled (alpha={args.balance_alpha})")
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=shuffle,
+        sampler=sampler,
         drop_last=drop_last,
         **loader_kwargs,
     )
@@ -187,6 +237,14 @@ def main():
     else:
         print(f"[Warning] Checkpoint {ckpt_path} not found, initializing from scratch.")
 
+    active_token_ids = (
+        collect_active_token_ids(train_dataset.rows, char_to_id, include_blank=True)
+        if args.protect_unseen_ctc
+        else None
+    )
+    if active_token_ids is not None:
+        print(f"Protecting unseen CTC head rows: {len(active_token_ids)}/{num_classes} active token IDs")
+
     trainer = OCRTrainer(
         model=model,
         train_loader=train_loader,
@@ -200,6 +258,10 @@ def main():
         amp_dtype=amp_dtype,
         warmup_epochs=args.warmup_epochs,
         min_lr=args.min_lr,
+        freeze_backbone=args.freeze_backbone,
+        backbone_lr_scale=args.backbone_lr_scale,
+        l2_sp_weight=args.l2_sp_weight,
+        active_token_ids=active_token_ids,
     )
 
     trainer.fit(epochs=args.epochs)

@@ -62,3 +62,17 @@ def exact_match_accuracy(references: Iterable[str], hypotheses: Iterable[str]) -
     if count == 0:
         return 0.0, 0.0
     return raw_matches / count, norm_matches / count
+
+
+def word_error_rate(references: Iterable[str], hypotheses: Iterable[str]) -> float:
+    """Compute corpus WER on whitespace-delimited tokens after normalization."""
+    total_distance = 0
+    total_reference_words = 0
+    for reference, hypothesis in zip(references, hypotheses, strict=True):
+        ref_words = normalize_text(reference).split()
+        hyp_words = normalize_text(hypothesis).split()
+        total_distance += edit_distance(ref_words, hyp_words)
+        total_reference_words += len(ref_words)
+    if total_reference_words == 0:
+        return 0.0 if total_distance == 0 else math.inf
+    return total_distance / total_reference_words

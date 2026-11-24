@@ -10,6 +10,8 @@ import tarfile
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Sequence
+import yaml
 
 from ocrtorch.cloud.colab import refresh_access_token, run_colab, split_file
 from ocrtorch.cloud.gcs import parse_gcs, require_gcs_prefix
@@ -29,6 +31,8 @@ TPU_VARIANT_MAP = {
     "tpuv6e": "v6e1",
     "v6e": "v6e1",
     "v6e1": "v6e1",
+    "tpuv5e": "v5e1",
+    "v5e": "v5e1",
     "v5e1": "v5e1",
 }
 
@@ -43,8 +47,9 @@ def normalize_tpu_variant(variant: str) -> str:
     return normalized
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=str, default=None, help="Optional YAML config file (CLI flags override)")
     parser.add_argument("--model-gcs", default="gs://handnotes-ocr/model-dir", help="Base GCS directory for models")
     parser.add_argument(
         "--checkpoint-gcs",
@@ -58,20 +63,60 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tpu",
         default="tpuv6e",
-        choices=["tpuv6e", "v6e", "v6e1", "v5e1"],
+        choices=["tpuv6e", "v6e", "v6e1", "tpuv5e", "v5e", "v5e1"],
         help="TPU accelerator variant (default: tpuv6e)",
     )
-    parser.add_argument("--epochs", type=int, default=20, help="Maximum epochs")
-    parser.add_argument("--batch-size", type=int, default=8, help="Batch size per step")
-    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate")
-    parser.add_argument("--patience", type=int, default=3, help="Early stopping patience")
+    parser.add_argument("--epochs", type=int, default=40, help="Maximum epochs")
+    parser.add_argument("--batch-size", type=int, default=64, help="Batch size per step")
+    parser.add_argument("--lr", type=float, default=4e-5, help="Learning rate")
+    parser.add_argument("--warmup-epochs", type=int, default=3, help="Linear LR warmup epochs")
+    parser.add_argument("--min-lr", type=float, default=1e-6, help="Minimum cosine-annealed learning rate")
+    parser.add_argument("--patience", type=int, default=8, help="Early stopping patience")
+    parser.add_argument("--num-workers", type=int, default=4, help="DataLoader worker processes")
+    parser.add_argument(
+        "--bf16",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use hybrid bfloat16 autocast with float32 master weights (default: True)",
+    )
+    parser.add_argument(
+        "--max-target-len",
+        type=int,
+        default=40,
+        help="Pad targets to fixed static length (default: 40; 0 disables)",
+    )
+    parser.add_argument(
+        "--drop-last",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Drop trailing partial batch in train DataLoader (default: True)",
+    )
     parser.add_argument(
         "--manifests-dir",
         type=Path,
         default=ROOT / "data" / "manifests",
         help="Directory containing train.jsonl, validation.jsonl, split_metadata.json",
     )
-    return parser.parse_args()
+    return parser
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = build_parser()
+    known, _ = parser.parse_known_args(argv)
+    if known.config:
+        cfg_path = Path(known.config)
+        with cfg_path.open("r", encoding="utf-8") as f:
+            raw_cfg = yaml.safe_load(f) or {}
+        if not isinstance(raw_cfg, dict):
+            raise ValueError(f"Config file must contain a YAML mapping: {cfg_path}")
+        # Allow 'device' key from shared training YAML configs (Colab launcher always targets TPU).
+        cfg_values = {k: v for k, v in raw_cfg.items() if k != "device"}
+        valid_dests = {action.dest for action in parser._actions} - {"help", "config"}
+        unknown_keys = sorted(set(cfg_values.keys()) - valid_dests)
+        if unknown_keys:
+            raise ValueError(f"Unknown config key(s) in {cfg_path}: {', '.join(unknown_keys)}")
+        parser.set_defaults(**cfg_values)
+    return parser.parse_args(argv)
 
 
 def main() -> int:
@@ -173,7 +218,13 @@ def main() -> int:
         "epochs": args.epochs,
         "batch_size": args.batch_size,
         "lr": args.lr,
+        "warmup_epochs": args.warmup_epochs,
+        "min_lr": args.min_lr,
         "patience": args.patience,
+        "num_workers": args.num_workers,
+        "bf16": args.bf16,
+        "max_target_len": args.max_target_len,
+        "drop_last": args.drop_last,
         "phase": "prepare",
         "gcp_project": project,
         "quota_project_id": getattr(credentials, "quota_project_id", None),
@@ -273,9 +324,11 @@ def main() -> int:
             metadata = status
             print(json.dumps({
                 "status": "complete",
+                "tpu": tpu_flag,
                 "output_gcs": output_gcs,
                 "uploaded_files": metadata.get("checkpoint_files"),
-                "best_epoch": metadata.get("best_epoch"),
+                "epochs_run": metadata.get("epochs_run"),
+                "total_time_seconds": metadata.get("total_time_seconds"),
                 "best_cer": metadata.get("best_cer"),
                 "backend": metadata.get("backend"),
                 "gcs_inputs": {

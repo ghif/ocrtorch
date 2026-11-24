@@ -259,13 +259,18 @@ def upload_checkpoint(gcs, config: dict) -> dict:
         "checkpoint_files": uploaded,
         "best_cer": metadata.get("best_cer"),
         "epochs_run": metadata.get("epochs_run"),
+        "total_time_seconds": metadata.get("total_time_seconds"),
         "backend": metadata.get("backend", "tpu"),
         "history": metadata.get("history"),
     }
 
 
 def prepare_runtime(config: dict) -> dict:
-    run([sys.executable, "-m", "pip", "install", "--upgrade", *PINNED_PACKAGES])
+    run([
+        sys.executable, "-m", "pip", "install", "--upgrade",
+        "--extra-index-url", "https://download.pytorch.org/whl/cpu",
+        *PINNED_PACKAGES,
+    ])
 
     # Probe TorchTPU hardware
     probe_code = (
@@ -347,9 +352,15 @@ def train_staged(config: dict) -> dict:
         "--output-dir", str(output_dir),
         "--device", "tpu",
         "--epochs", str(config["epochs"]),
-        "--batch-size", str(config.get("batch_size", 8)),
-        "--lr", str(config.get("lr", 1e-5)),
-        "--patience", str(config.get("patience", 3)),
+        "--batch-size", str(config.get("batch_size", 64)),
+        "--lr", str(config.get("lr", 4e-5)),
+        "--warmup-epochs", str(config.get("warmup_epochs", 3)),
+        "--min-lr", str(config.get("min_lr", 1e-6)),
+        "--patience", str(config.get("patience", 8)),
+        "--num-workers", str(config.get("num_workers", 4)),
+        "--max-target-len", str(config.get("max_target_len", 40)),
+        "--bf16" if config.get("bf16", True) else "--no-bf16",
+        "--drop-last" if config.get("drop_last", True) else "--no-drop-last",
     ]
 
     import os
@@ -368,6 +379,7 @@ def train_staged(config: dict) -> dict:
         "checkpoint_files": sum(1 for path in output_dir.rglob("*") if path.is_file()),
         "best_cer": metadata.get("best_cer"),
         "epochs_run": metadata.get("epochs_run"),
+        "total_time_seconds": metadata.get("total_time_seconds"),
         "backend": metadata.get("backend", "tpu"),
         "test_set_used": False,
         "history": metadata.get("history"),

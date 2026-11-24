@@ -1,0 +1,17 @@
+device: tpu
+bf16: true
+epochs: 30
+batch_size: 64
+lr: 2.0e-5
+warmup_epochs: 3
+min_lr: 1.0e-6
+patience: 6
+num_workers: 4
+max_target_len: 40
+drop_last: true
+freeze_backbone: false
+backbone_lr_scale: 0.1
+l2_sp_weight: 5.0e-4
+protect_unseen_ctc: true
+balance_fields: true
+balance_alpha: 0.5

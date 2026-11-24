@@ -63,6 +63,10 @@ class OCRTrainer:
         amp_dtype: torch.dtype | None = None,
         warmup_epochs: int = 0,
         min_lr: float = 1e-6,
+        freeze_backbone: bool = False,
+        backbone_lr_scale: float = 1.0,
+        l2_sp_weight: float = 0.0,
+        active_token_ids: set[int] | None = None,
     ):
         self.device = torch.device(device)
         self.amp_dtype = amp_dtype
@@ -76,6 +80,9 @@ class OCRTrainer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.freeze_batchnorm()
+        if freeze_backbone and hasattr(self._raw_model, "backbone"):
+            for p in self._raw_model.backbone.parameters():
+                p.requires_grad = False
 
         if compile_backend and compile_backend.lower() != "none":
             self.model = torch.compile(self._raw_model, backend=compile_backend)
@@ -83,18 +90,49 @@ class OCRTrainer:
             self.model = self._raw_model
 
         self.criterion = CTCLossStep().to(self.device)
-        trainable_params = [p for p in self._raw_model.parameters() if p.requires_grad]
+        param_groups = self._build_param_groups(learning_rate, backbone_lr_scale)
         self.optimizer = torch.optim.AdamW(
-            trainable_params,
+            param_groups,
             lr=learning_rate,
             weight_decay=weight_decay,
         )
+        self.l2_sp_weight = float(l2_sp_weight)
+        self._l2_sp_anchors: list[tuple[nn.Parameter, torch.Tensor]] = (
+            [(p, p.detach().clone()) for p in self._raw_model.parameters() if p.requires_grad]
+            if self.l2_sp_weight > 0.0
+            else []
+        )
+        self._ctc_grad_mask: torch.Tensor | None = None
+        if active_token_ids is not None and hasattr(self._raw_model, "ctc"):
+            num_classes = self._raw_model.ctc.out_features
+            mask = torch.zeros(num_classes, device=self.device, dtype=torch.float32)
+            for idx in active_token_ids:
+                if 0 <= idx < num_classes:
+                    mask[idx] = 1.0
+            self._ctc_grad_mask = mask
+
         self.early_stopping = EarlyStopping(patience=patience)
         self.max_grad_norm = max_grad_norm
         self.base_lr = learning_rate
         self.warmup_epochs = max(0, warmup_epochs)
         self.min_lr = min_lr
         self.history: list[dict] = []
+
+    def _build_param_groups(self, learning_rate: float, backbone_lr_scale: float) -> list[dict]:
+        """Build optimizer parameter groups with optional differential backbone LR."""
+        if backbone_lr_scale != 1.0 and hasattr(self._raw_model, "backbone"):
+            backbone_params = [p for p in self._raw_model.backbone.parameters() if p.requires_grad]
+            backbone_ids = {id(p) for p in backbone_params}
+            other_params = [p for p in self._raw_model.parameters() if p.requires_grad and id(p) not in backbone_ids]
+            groups = []
+            if backbone_params:
+                groups.append({"params": backbone_params, "lr": learning_rate * backbone_lr_scale})
+            if other_params:
+                groups.append({"params": other_params, "lr": learning_rate})
+            if groups:
+                return groups
+        trainable_params = [p for p in self._raw_model.parameters() if p.requires_grad]
+        return [{"params": trainable_params, "lr": learning_rate}]
 
     def _build_scheduler(self, epochs: int) -> torch.optim.lr_scheduler.LambdaLR:
         """Build linear-warmup + cosine-annealing LR scheduler stepped once per epoch."""
@@ -140,12 +178,21 @@ class OCRTrainer:
             with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype, enabled=use_autocast):
                 logits = self.model(images)
             loss = self.criterion(logits.float(), targets, input_lengths, target_lengths)
+            if self._l2_sp_anchors:
+                l2_sp_loss = sum(((p.float() - p0.float()) ** 2).sum() for p, p0 in self._l2_sp_anchors)
+                loss = loss + self.l2_sp_weight * l2_sp_loss
 
             if self.device.type != "tpu" and (torch.isnan(loss) or torch.isinf(loss)):
                 print(f"[Warning] NaN/Inf loss encountered at batch {batch_idx}, skipping update")
                 continue
 
             loss.backward()
+            if self._ctc_grad_mask is not None and hasattr(self._raw_model, "ctc"):
+                ctc_layer = self._raw_model.ctc
+                if ctc_layer.weight.grad is not None:
+                    ctc_layer.weight.grad.mul_(self._ctc_grad_mask.unsqueeze(1))
+                if ctc_layer.bias is not None and ctc_layer.bias.grad is not None:
+                    ctc_layer.bias.grad.mul_(self._ctc_grad_mask)
             torch.nn.utils.clip_grad_norm_(self._raw_model.parameters(), self.max_grad_norm)
             self.optimizer.step()
 

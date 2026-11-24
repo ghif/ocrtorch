@@ -108,3 +108,64 @@ def test_trainer_saves_clean_state_dict_with_compile_and_autocast(tmp_path):
     assert summary["history"][1]["lr"] == pytest.approx(1e-4)
     saved = torch.load(tmp_path / "latest_model.pt", weights_only=True)
     assert all(not k.startswith("_orig_mod.") for k in saved.keys())
+
+
+def test_trainer_anti_forgetting_protects_unseen_ctc_and_backbone(tmp_path):
+    from ocrtorch.train.trainer import OCRTrainer
+
+    class TinyModularOCR(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.backbone = torch.nn.Conv2d(3, 4, kernel_size=1)
+            self.bn = torch.nn.BatchNorm2d(4)
+            self.ctc = torch.nn.Linear(4, 6)
+
+        def forward(self, x):
+            pooled = self.bn(self.backbone(x)).mean(dim=(2, 3)).unsqueeze(1).expand(-1, 40, -1)
+            return self.ctc(pooled)
+
+    class DictLoader:
+        def __init__(self, batch):
+            self.batch = batch
+
+        def __iter__(self):
+            yield self.batch
+
+        def __len__(self):
+            return 1
+
+    batch = {
+        "images": torch.randn(2, 3, 8, 8),
+        "targets": torch.tensor([[1, 2, 0, 0], [2, 1, 0, 0]], dtype=torch.long),
+        "input_lengths": torch.tensor([40, 40], dtype=torch.long),
+        "target_lengths": torch.tensor([2, 2], dtype=torch.long),
+        "texts": ["ab", "ba"],
+    }
+    loader = DictLoader(batch)
+    model = TinyModularOCR()
+    init_backbone_w = model.backbone.weight.detach().clone()
+    init_ctc_w = model.ctc.weight.detach().clone()
+    init_ctc_b = model.ctc.bias.detach().clone()
+
+    trainer = OCRTrainer(
+        model=model,
+        train_loader=loader,  # type: ignore[arg-type]
+        val_loader=loader,  # type: ignore[arg-type]
+        characters=["a", "b", "c", "d", "e"],
+        device="cpu",
+        output_dir=tmp_path,
+        learning_rate=1e-2,
+        weight_decay=0.0,
+        freeze_backbone=True,
+        l2_sp_weight=1e-3,
+        active_token_ids={0, 1, 2},
+    )
+    trainer.fit(epochs=2)
+
+    # Backbone frozen -> unchanged
+    assert torch.equal(model.backbone.weight.detach(), init_backbone_w)
+    # Unseen CTC rows (3, 4, 5) -> bit-for-bit unchanged
+    assert torch.equal(model.ctc.weight.detach()[3:], init_ctc_w[3:])
+    assert torch.equal(model.ctc.bias.detach()[3:], init_ctc_b[3:])
+    # Active CTC rows (0, 1, 2) -> updated
+    assert not torch.equal(model.ctc.weight.detach()[:3], init_ctc_w[:3])

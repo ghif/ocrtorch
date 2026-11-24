@@ -6,7 +6,12 @@ import pytest
 import torch
 from PIL import Image
 
-from ocrtorch.data.dataset import OCRDataset, ocr_collate_fn
+from ocrtorch.data.dataset import (
+    OCRDataset,
+    build_field_balanced_sampler,
+    collect_active_token_ids,
+    ocr_collate_fn,
+)
 
 
 def test_ocr_dataset_and_collate(tmp_path):
@@ -38,3 +43,18 @@ def test_ocr_dataset_and_collate(tmp_path):
     assert static_batch["targets"].shape == (2, 40)
     assert torch.equal(static_batch["targets"][:, :2], batch["targets"])
     assert torch.all(static_batch["targets"][:, 2:] == 0)
+
+
+def test_field_balanced_sampler_and_active_token_ids():
+    rows = [{"image": f"img{i}.png", "text": "12/05", "field": "dates"} for i in range(9)]
+    rows.append({"image": "hb.png", "text": "12.5", "field": "hemoglobin"})
+
+    sampler = build_field_balanced_sampler(rows, alpha=0.5, seed=7)
+    weights = list(sampler.weights)
+    assert weights[-1] > weights[0]
+    assert weights[-1] == pytest.approx(3.0 * weights[0])
+
+    char_to_id = {"1": 1, "2": 2, "5": 3, "/": 4, ".": 5, "A": 6}
+    active = collect_active_token_ids(rows, char_to_id, include_blank=True)
+    assert active == {0, 1, 2, 3, 4, 5}
+    assert 6 not in active

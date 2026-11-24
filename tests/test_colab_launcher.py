@@ -35,9 +35,30 @@ class ColabLauncherTests(unittest.TestCase):
         self.assertEqual(normalize_tpu_variant("tpuv6e"), "v6e1")
         self.assertEqual(normalize_tpu_variant("v6e"), "v6e1")
         self.assertEqual(normalize_tpu_variant("v6e1"), "v6e1")
+        self.assertEqual(normalize_tpu_variant("tpuv5e"), "v5e1")
+        self.assertEqual(normalize_tpu_variant("v5e"), "v5e1")
         self.assertEqual(normalize_tpu_variant("v5e1"), "v5e1")
         with self.assertRaises(ValueError):
             normalize_tpu_variant("unsupported_tpu")
+
+    def test_parse_args_loads_yaml_config_and_allows_cli_override(self) -> None:
+        cfg_path = colab_launcher.ROOT / "configs" / "tpu_v6e.yaml"
+        args = colab_launcher.parse_args([
+            "--config", str(cfg_path),
+            "--tpu", "v5e",
+            "--epochs", "10",
+        ])
+        self.assertEqual(args.tpu, "v5e")
+        self.assertEqual(args.epochs, 10)
+        self.assertEqual(args.batch_size, 64)
+        self.assertEqual(args.lr, 4e-5)
+        self.assertEqual(args.warmup_epochs, 3)
+        self.assertEqual(args.min_lr, 1e-6)
+        self.assertEqual(args.patience, 8)
+        self.assertEqual(args.num_workers, 4)
+        self.assertTrue(args.bf16)
+        self.assertEqual(args.max_target_len, 40)
+        self.assertTrue(args.drop_last)
 
     def test_main_runs_phases_with_tpu_and_stops_session(self) -> None:
         phases: list[str] = []

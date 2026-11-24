@@ -43,8 +43,10 @@ def test_parse_args_rejects_unknown_yaml_keys(tmp_path):
 
 
 def test_resolve_runtime_options_defaults_hybrid_bf16_on_tpu():
+    from types import SimpleNamespace
+
     args = parse_args(_base_cli_args())
-    tpu_opts = resolve_runtime_options(args, torch.device("tpu"))
+    tpu_opts = resolve_runtime_options(args, SimpleNamespace(type="tpu"))
     assert tpu_opts["amp_dtype"] == torch.bfloat16
     assert tpu_opts["max_target_len"] == 40
     assert tpu_opts["drop_last"] is True
@@ -53,3 +55,16 @@ def test_resolve_runtime_options_defaults_hybrid_bf16_on_tpu():
     assert cpu_opts["amp_dtype"] is None
     assert cpu_opts["max_target_len"] is None
     assert cpu_opts["drop_last"] is False
+
+
+def test_bukukia_page3_configs_parse_cleanly():
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent
+    for cfg_name in ("bukukia_page3_mps.yaml", "bukukia_page3_tpu_v6e.yaml"):
+        args = parse_args(["--config", str(repo_root / "configs" / cfg_name), *_base_cli_args()])
+        assert args.backbone_lr_scale == pytest.approx(0.1)
+        assert args.l2_sp_weight == pytest.approx(5e-4)
+        assert args.protect_unseen_ctc is True
+        assert args.balance_fields is True
+        assert args.balance_alpha == pytest.approx(0.5)

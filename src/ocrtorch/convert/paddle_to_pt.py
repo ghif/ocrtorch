@@ -26,30 +26,30 @@ def convert_arrays_to_pt(
         parts = k.split(".")
         if parts[-1] == "weight":
             if parts[-2] in ("conv", "branch1", "branch3", "fc1", "fc2"):
-                jax_path = "/".join(parts[:-1]) + "/kernel"
+                source_key = "/".join(parts[:-1]) + "/kernel"
             elif parts[-2] in ("bn", "identity_bn"):
-                jax_path = "/".join(parts[:-1]) + "/scale"
+                source_key = "/".join(parts[:-1]) + "/scale"
             elif parts[-2] in ("norm", "norm1", "norm2"):
-                jax_path = "/".join(parts[:-1]) + "/scale"
+                source_key = "/".join(parts[:-1]) + "/scale"
             elif parts[-2] in ("qkv", "proj"):
-                jax_path = "/".join(parts[:-1]) + "/kernel"
+                source_key = "/".join(parts[:-1]) + "/kernel"
             elif parts[0] == "ctc":
-                jax_path = "ctc/kernel"
+                source_key = "ctc/kernel"
             else:
-                jax_path = "/".join(parts[:-1]) + "/kernel"
+                source_key = "/".join(parts[:-1]) + "/kernel"
         elif parts[-1] == "bias":
-            jax_path = "/".join(parts[:-1]) + "/bias"
+            source_key = "/".join(parts[:-1]) + "/bias"
         elif parts[-1] == "running_mean":
-            jax_path = "/".join(parts[:-1]) + "/mean"
+            source_key = "/".join(parts[:-1]) + "/mean"
         elif parts[-1] == "running_var":
-            jax_path = "/".join(parts[:-1]) + "/var"
+            source_key = "/".join(parts[:-1]) + "/var"
         else:
             raise ValueError(f"Unknown param {k}")
 
-        if jax_path not in data:
-            raise KeyError(f"Missing parameter array for {jax_path}")
+        if source_key not in data:
+            raise KeyError(f"Missing parameter array for {source_key}")
 
-        val = data[jax_path]
+        val = data[source_key]
         if val.ndim == 4:
             # HWIO -> OIHW
             val = np.transpose(val, (3, 2, 0, 1))
