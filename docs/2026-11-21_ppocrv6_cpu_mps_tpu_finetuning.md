@@ -88,35 +88,20 @@ flowchart LR
 - **Sequence Neck (`LightSVTR`):** Projects channels from $768 \to 192$, applies a $1 \times 7$ depthwise `SiLU` convolution for local stroke continuity, and runs two multi-head self-attention blocks (8 heads, head dimension 24, MLP ratio 4.0) over $T=40$ steps with a residual projection.
 - **CTC Head (`nn.Linear`):** A single $192 \to 18{,}710$ linear projection (~3.59M parameters), whose wide vocabulary matrix drives a large share of memory traffic during backpropagation.
 
-### 1. Weight & Tensor-Layout Conversion (`paddle_to_pt.py`)
-Porting the flattened Paddle/JAX checkpoint arrays (`ppocrv6_medium_rec_orbax_flat.npz`) into a PyTorch `state_dict` requires translating both parameter naming conventions and tensor axis layouts:
-- **Parameter names:** `kernel` → `weight` (convolutions and linear layers), `scale` / `bias` → `weight` / `bias` (`BatchNorm2d` and `LayerNorm`), and `mean` / `var` → `running_mean` / `running_var` (skipping PyTorch's `num_batches_tracked` buffer).
-- **Axis permutations:** 4D convolution kernels use `HWIO` layout in the exported arrays and must be transposed to PyTorch's `OIHW` (`(3, 2, 0, 1)`), while 2D linear weights (`qkv`, `proj`, `fc1`, `fc2`, `ctc`) transpose from `IO` to `OI` (`val.T`).
+### 1. Direct PaddleOCR-to-PyTorch Conversion (`paddle_to_pt.py`)
+Rather than routing weights through an intermediate Orbax/JAX export, `ocrtorch` converts directly from the official PaddleOCR 3.x PIR inference artifacts (`inference.json` and `inference.pdiparams`) in pure Python and NumPy—requiring no `paddlepaddle` runtime installation. `load_paddle_pir_params` reads the parameter names and shapes from `inference.json` and unpacks the 161 float32 tensors sequentially from `inference.pdiparams`.
+
+Mapping those 161 Paddle tensors into PyTorch's 407-tensor `state_dict` relies on three rules:
+- **Native `OIHW` convolutions, `IO → OI` linears:** Unlike JAX/Flax (`HWIO`), PaddlePaddle already stores 4D convolution kernels in PyTorch's `OIHW` layout, so convolutions copy directly without axis permutation. Only 2D linear weights (`qkv`, `proj`, `fc1`, `fc2`, and `ctc`) transpose from `IO` to `OI` (`w.T`).
+- **Unfusing backbone `ConvBN` and `RepDW` blocks:** Paddle's inference graph folds each backbone `ConvBN` and `RepDW` block into a single biased convolution (`conv2d_73..130`). To preserve the explicit `BatchNorm2d` and residual skip structure needed for fine-tuning, we initialize those `BatchNorm2d` nodes to the identity transform ($\gamma = 1, \beta = 0, \mu = 0, \sigma^2 = 1 - 10^{-5}$) and subtract `1.0` from the center weight of each fused $3 \times 3$ `RepDW` kernel to account for `RepDWConv`'s explicit `identity_bn` skip connection.
+- **Unfused neck and attention layers:** The `LightSVTR` neck convolutions (`conv2d_70..72`) keep their separate `batch_norm2d_58..60` statistics (`w_0`, `b_0`, `w_1`, `w_2`), alongside `layer_norm_0..4` and `linear_0..8`.
 
 ```python
-# src/ocrtorch/convert/paddle_to_pt.py
-for k, v in model.state_dict().items():
-    if k.endswith(".num_batches_tracked"):
-        continue
-    parts = k.split(".")
-    if parts[-1] == "weight":
-        if parts[-2] in ("bn", "identity_bn", "norm", "norm1", "norm2"):
-            source_key = "/".join(parts[:-1]) + "/scale"
-        else:
-            source_key = "ctc/kernel" if parts[0] == "ctc" else "/".join(parts[:-1]) + "/kernel"
-    elif parts[-1] == "bias":
-        source_key = "/".join(parts[:-1]) + "/bias"
-    elif parts[-1] == "running_mean":
-        source_key = "/".join(parts[:-1]) + "/mean"
-    elif parts[-1] == "running_var":
-        source_key = "/".join(parts[:-1]) + "/var"
-
-    val = data[source_key]
-    if val.ndim == 4:
-        val = np.transpose(val, (3, 2, 0, 1))  # HWIO -> OIHW
-    elif val.ndim == 2:
-        val = val.T                            # IO -> OI
-    mapped[k] = torch.from_numpy(val)
+# src/ocrtorch/convert/paddle_to_pt.py (Paddle PIR -> PyTorch)
+kernel = arrays[f"conv2d_{layer}.w_0"].copy()  # Already OIHW: [C, 1, 3, 3]
+kernel[:, 0, 1, 1] -= 1.0                     # Preserve explicit RepDW identity skip
+mapped[f"{prefix}.branch3.conv.weight"] = torch.from_numpy(kernel)
+mapped[f"neck.blocks.{block}.{name}.weight"] = torch.from_numpy(arrays[f"linear_{l}.w_0"].T)
 ```
 
 ### 2. Asymmetric Even-Kernel Padding & Valid Pooling (`ppocrv6.py`)

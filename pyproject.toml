@@ -33,8 +33,10 @@ tpu = [
 
 [project.scripts]
 ocrtorch-convert = "ocrtorch.convert.paddle_to_pt:main"
+ocrtorch-convert-det = "ocrtorch.convert.det_to_pt:main"
 ocrtorch-train = "ocrtorch.cli.train:main"
 ocrtorch-evaluate = "ocrtorch.cli.evaluate:main"
+ocrtorch-predict = "ocrtorch.cli.predict:main"
 ocrtorch-colab = "ocrtorch.cli.colab:main"
 
 [tool.setuptools.packages.find]
