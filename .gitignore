@@ -39,3 +39,8 @@ ENV/
 /data/
 /artifacts/*
 !/artifacts/.gitkeep
+
+# Confidential dataset/experiment files
+*bukukia*
+*buku_kia*
+*buku-kia*

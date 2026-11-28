@@ -1,4 +1,4 @@
-"""End-to-end Buku KIA PP-OCRv6 pipeline with page/field-routed recognition."""
+"""End-to-end PP-OCRv6 pipeline with page/field-routed recognition."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ class OCRItem:
 
 
 @dataclass
-class BukuKIAPageResult:
+class OCRPageResult:
     page_id: str | None
     items: list[OCRItem]
     full_text: str
@@ -215,8 +215,8 @@ class RoutedOCRRecognizer:
         return texts, scores, routes
 
 
-class BukuKIAPipeline:
-    """Full PyTorch PP-OCRv6 detection + routed recognition pipeline for Buku KIA."""
+class OCRPipeline:
+    """Full PyTorch PP-OCRv6 detection + routed recognition pipeline."""
 
     def __init__(
         self,
@@ -235,7 +235,7 @@ class BukuKIAPipeline:
         inference_yaml: Path | str,
         page3_rec_checkpoint: Path | str | None = None,
         device: torch.device | str = "cpu",
-    ) -> "BukuKIAPipeline":
+    ) -> "OCRPipeline":
         det_model = PP_OCRv6MediumDet()
         det_state = torch.load(det_checkpoint, map_location="cpu", weights_only=True)
         det_model.load_state_dict(det_state, strict=True)
@@ -260,7 +260,7 @@ class BukuKIAPipeline:
         unclip_ratio: float = 1.4,
         max_side_len: int = 960,
         batch_size: int = 16,
-    ) -> BukuKIAPageResult:
+    ) -> OCRPageResult:
         """Run full-page detection, cropping, reading-order sorting, and routed recognition."""
         t_start = time.perf_counter()
 
@@ -329,7 +329,7 @@ class BukuKIAPipeline:
         full_text = "\n".join(it.text for it in items if it.text)
         t_total_ms = (time.perf_counter() - t_start) * 1000.0
 
-        return BukuKIAPageResult(
+        return OCRPageResult(
             page_id=page_id,
             items=items,
             full_text=full_text,

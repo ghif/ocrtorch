@@ -1,19 +1,22 @@
 # OCRtorch
 
-[![PyTorch 2.10+](https://img.shields.io/badge/PyTorch-2.10.0-EE4C2C.svg)](https://pytorch.org/)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](https://www.python.org/)
+[![PyTorch 2.10+](https://img.shields.io/badge/PyTorch-2.10%2B-EE4C2C.svg)](https://pytorch.org/)
 [![Parity: 100%](https://img.shields.io/badge/Paddle--PyTorch%20Parity-40%2F40%20tokens-brightgreen.svg)](#numerical-parity-verification)
 [![TorchTPU Ready](https://img.shields.io/badge/TorchTPU-Ready-blue.svg)](https://pytorch.org/blog/introducing-torchtpu/)
 
-**OCRtorch** is a modular PyTorch implementation of the [PP-OCRv6](https://arxiv.org/abs/2606.13108) text recognition architecture (`PP_OCRv6MediumRec`). It provides verified numerical parity against Paddle reference weights, reproducible image preprocessing, CTC fine-tuning with early stopping, and static-shape execution across CPU, Apple Silicon MPS, and Google Cloud TPUs via [TorchTPU](https://pytorch.org/blog/introducing-torchtpu/).
+**OCRtorch** is a clean, modular PyTorch implementation of the [PP-OCRv6](https://arxiv.org/abs/2606.13108) text recognition and detection stack (`PP_OCRv6MediumRec` and `PP_OCRv6MediumDet`). It delivers verified token-for-token numerical parity with PaddleOCR reference weights, reproducible preprocessing, CTC fine-tuning with early stopping, and static-shape execution across **CPU**, **Apple Silicon MPS**, and **Google Cloud TPUs** via [TorchTPU](https://pytorch.org/blog/introducing-torchtpu/).
+
+[Installation](#installation) • [Quick Start](#quick-start) • [CLI & Configs](#cli--config-reference) • [Architecture](#architecture-overview) • [Parity](#numerical-parity-verification) • [Contributing](#contributing)
 
 ---
 
-## Key Capabilities
+## Key Features
 
-- **Exact reference parity:** Aligns tensor layouts, asymmetric even-kernel padding, valid-window pooling, and normalization epsilons to match Paddle reference activations across all 16 intermediate stages.
-- **Multi-backend training:** Runs the same PyTorch model and training loop on CPU, Apple Silicon MPS (with a CPU fallback bridge for `nn.CTCLoss`), and Cloud TPUs (`torch.device("tpu")`).
-- **Static-shape pipeline:** Pads batches to fixed `[B, 3, 48, 320]` inputs with `input_lengths = 40` for XLA and `torch.compile` compatibility.
-- **CLI tooling:** Includes entry points for weight conversion (`ocrtorch-convert`), training (`ocrtorch-train`), and cloud orchestration (`ocrtorch-colab`).
+- **Exact PaddleOCR parity:** Aligns tensor layouts, asymmetric even-kernel padding, valid-window pooling, and normalization epsilons to match Paddle reference activations across all 16 intermediate stages (`40/40` argmax tokens).
+- **One codebase, every accelerator:** Runs the same model and training loop on CPU, Apple Silicon MPS (with automatic CPU fallback for `nn.CTCLoss`), CUDA, and Cloud TPUs (`torch.device("tpu")`).
+- **TorchTPU-ready static shapes:** Pads image batches to `[B, 3, 48, 320]` with fixed `input_lengths = 40`, static target padding, and hybrid `bfloat16` autocast (`float32` master weights and optimizer states).
+- **Batteries-included CLIs:** Convert PaddleOCR 3.x PIR weights, evaluate checkpoints, fine-tune with YAML presets, run detection + recognition inference, and launch Colab TPU jobs.
 
 ---
 
@@ -37,70 +40,109 @@ flowchart LR
 
 ## Installation
 
-OCRtorch requires **Python 3.11+**. Install the package in editable mode from the repository root:
+OCRtorch requires **Python 3.11+**. Dependencies are managed in [pyproject.toml](pyproject.toml) (no `requirements.txt` is needed).
+
+### Standard Environment (`pip` / `.venv`)
 
 ```bash
+git clone https://github.com/<your-org>/ocrtorch.git
+cd ocrtorch
 pip install -e ".[dev]"
 ```
 
-Optional extras are available for cloud storage orchestration and TPU execution:
+Optional extras:
 
 ```bash
-pip install -e ".[dev,cloud]"   # Google Auth and GCS utilities
+pip install -e ".[dev,cloud]"   # Google Auth & GCS utilities
 pip install -e ".[tpu]"         # TorchTPU (torch-tpu) backend
+```
+
+### Preconfigured `torch-tpu` Conda Environment (TPU VMs)
+
+If you are using a `torch-tpu` conda environment (which already provides `torch`, `torchvision`, `torch_tpu`, `libtpu`, `numpy`, `pillow`, and `PyYAML`), install with `--no-deps` so `pip` preserves the preinstalled `torch`/`torch_tpu` packages:
+
+```bash
+conda activate torch-tpu
+pip install --no-build-isolation --no-deps -e .
+pip install pytest  # Optional: to run the test suite
 ```
 
 ---
 
 ## Quick Start
 
-### 1. Weight Conversion
+### 1. Convert PaddleOCR Weights to PyTorch
 
-Convert flattened Paddle/JAX parameter arrays (`.npz`) to a PyTorch `state_dict` (`.pt`):
+Convert a PaddleOCR 3.x PIR model directory (containing `inference.json` and `inference.pdiparams`) or exported `.npz` weights into a PyTorch `state_dict`:
 
 ```bash
-ocrtorch-convert --input path/to/weights.npz --output artifacts/ppocrv6_medium_rec.pt
+ocrtorch-convert \
+  --input path/to/PP-OCRv6_medium_rec \
+  --output artifacts/ppocrv6_medium_rec.pt
 ```
 
-### 2. Local Fine-Tuning (CPU & Apple Silicon MPS)
+> [!NOTE]
+> Keep PaddleOCR's `inference.yml` (e.g., copy it to `artifacts/inference.yml`). The `.pt` checkpoint stores only model weights, while `inference.yml` provides the `18,709`-character dictionary (+ CTC blank ID `0` = `18,710` classes) used for label encoding and greedy decoding.
 
-The training CLI supports YAML configuration presets (`--config`, with CLI flags overriding YAML values), validation CER monitoring, automatic checkpointing (`best_model.pt` and `latest_model.pt`), linear warmup + cosine LR decay, and early stopping.
+### 2. Run Zero-Shot (or Post-Training) Evaluation
 
-Run on Apple Silicon MPS (with CPU fallback for `nn.CTCLoss`):
+Evaluate any checkpoint against a CSV label file (`Images,Text` columns) or a JSONL manifest (`{"image": ..., "text": ...}`):
+
+```bash
+ocrtorch-evaluate \
+  --checkpoint artifacts/ppocrv6_medium_rec.pt \
+  --inference-yaml artifacts/inference.yml \
+  --csv path/to/Test_Labels.csv \
+  --image-dir path/to/Test_Set \
+  --device auto \
+  --batch-size 64 \
+  --num-workers 4
+```
+
+- Pass `--manifest path/to/validation.jsonl` (instead of `--csv` and `--image-dir`) to evaluate a JSONL split.
+- Pass `--predictions-csv path/to/predictions.csv` to export per-image predictions alongside summary metrics (Raw/Normalized Exact Match, CER, WER, throughput).
+
+### 3. Fine-Tune Locally (CPU or Apple Silicon MPS)
+
+`ocrtorch-train` supports YAML presets (`--config`, with CLI flags overriding YAML values), validation CER monitoring, linear warmup + cosine LR decay, automatic checkpointing (`best_model.pt` and `latest_model.pt`), and early stopping:
 
 ```bash
 ocrtorch-train \
   --config configs/local_mps.yaml \
   --checkpoint artifacts/ppocrv6_medium_rec.pt \
-  --inference-yaml path/to/inference.yml \
+  --inference-yaml artifacts/inference.yml \
   --train-manifest path/to/train.jsonl \
   --val-manifest path/to/validation.jsonl \
   --output-dir artifacts/checkpoints/finetuned_mps
 ```
 
-Convenience wrapper scripts are also available in `scripts/`:
+Convenience wrapper scripts are available in `scripts/`:
 
 ```bash
-./scripts/finetune-mps.sh   # Apple Silicon MPS
-./scripts/finetune-cpu.sh   # Multi-core CPU
-./scripts/finetune-tpu-vm.sh  # Google Cloud TPU VM (uses configs/tpu_v6e.yaml)
+./scripts/finetune-mps.sh      # Apple Silicon MPS (configs/local_mps.yaml)
+./scripts/finetune-cpu.sh      # Multi-core CPU (configs/local_cpu.yaml)
 ```
 
-### 3. TorchTPU Execution
+### 4. Fine-Tune on Google Cloud TPU (`TorchTPU`)
 
-On Google Cloud TPUs (`v4`, `v5e`, `v5p`, or `v6e`) with `torch_tpu` installed, `ocrtorch-train --device tpu` automatically enables **hybrid `bfloat16` autocast** (keeping `float32` master weights and AdamW states while running `Conv2d`/`Linear` ops in `bfloat16`), static target padding (`--max-target-len 40`), and `drop_last=True`:
+On Cloud TPUs (`v4`, `v5e`, `v5p`, `v6e`) with `torch_tpu`, `ocrtorch-train --device tpu` automatically enables **hybrid `bfloat16` autocast** (keeping `float32` master weights and AdamW states while running `Conv2d`/`Linear` ops in `bfloat16`), static target padding (`--max-target-len 40`), and `drop_last=True`:
 
 ```bash
+# Option A: One-command VM staging + training
+./scripts/setup-tpu-vm.sh      # Activates torch-tpu (or .venv), verifies TPU, stages data into data/tpu/
+./scripts/finetune-tpu-vm.sh   # Launches ocrtorch-train with configs/tpu_v6e.yaml
+
+# Option B: Direct CLI invocation
 ocrtorch-train \
   --config configs/tpu_v6e.yaml \
   --checkpoint artifacts/ppocrv6_medium_rec.pt \
-  --inference-yaml path/to/inference.yml \
+  --inference-yaml artifacts/inference.yml \
   --train-manifest path/to/train.jsonl \
   --val-manifest path/to/validation.jsonl \
   --output-dir artifacts/checkpoints/finetuned_tpu_v6e
 ```
 
-Or in Python directly with `torch.device("tpu")` and `torch.autocast("tpu", dtype=torch.bfloat16)`:
+Or use `PP_OCRv6MediumRec` and `CTCLossStep` directly in Python:
 
 ```python
 import torch
@@ -108,15 +150,11 @@ import torch_tpu  # noqa: F401
 from ocrtorch.models.ppocrv6 import PP_OCRv6MediumRec
 from ocrtorch.train.loss import CTCLossStep
 
-# 1. Select the native TPU device (float32 master weights)
 device = torch.device("tpu")
 model = PP_OCRv6MediumRec().to(device)
-
-# 2. Configure optimizer and static-shape float32 CTC loss
 optimizer = torch.optim.AdamW(model.parameters(), lr=4e-5)
 criterion = CTCLossStep().to(device)
 
-# 3. Hybrid bfloat16 autocast forward + float32 CTC loss & backward
 images = torch.randn(64, 3, 48, 320, device=device)
 targets = torch.randint(1, 18700, (64, 40), dtype=torch.long)
 input_lengths = torch.full((64,), 40, dtype=torch.long)
@@ -129,15 +167,14 @@ loss.backward()
 optimizer.step()
 ```
 
-### 4. Cloud TPU Fine-Tuning via Colab CLI
+### 5. Launch Cloud TPU Fine-Tuning via Colab CLI
 
-To launch fine-tuning on a Google Colab TPU runtime from your local terminal, ensure:
-1. Cloud dependencies are installed (`pip install -e ".[cloud]"`).
-2. The Google Colab CLI (`colab`) is installed, authenticated, and available on `PATH`.
-3. Google Application Default Credentials are configured (`gcloud auth application-default login`) for GCS access.
-4. Local manifests (`train.jsonl`, `validation.jsonl`, `split_metadata.json`) exist under `data/manifests/` (or pass `--manifests-dir`).
+To run training on a Google Colab TPU runtime (`tpuv6e`, `v6e`, `v6e1`, `v5e1`) from your local terminal:
 
-Run `ocrtorch-colab` (supported `--tpu` values: `tpuv6e`, `v6e`, `v6e1`, `v5e1`):
+1. Install cloud dependencies (`pip install -e ".[cloud]"`).
+2. Ensure the Google Colab CLI (`colab`) is authenticated and on `PATH`.
+3. Configure Application Default Credentials (`gcloud auth application-default login`) for GCS access.
+4. Prepare local manifests (`train.jsonl`, `validation.jsonl`, `split_metadata.json`).
 
 ```bash
 ocrtorch-colab \
@@ -151,19 +188,30 @@ ocrtorch-colab \
   --patience 3
 ```
 
-Or use the convenience wrapper script:
+---
 
-```bash
-./scripts/finetune-colab-tpu.sh
-```
+## CLI & Config Reference
 
-The launcher provisions a Colab TPU runtime, installs `torch-tpu`, stages the checkpoint and dataset from GCS, runs `ocrtorch-train --device tpu`, uploads checkpoints (`best_model.pt`, `latest_model.pt`, and `training_summary.json`) to `<model-gcs>/finetuned-runs/`, and stops the Colab session on completion.
+| Entry Point | Purpose |
+| :--- | :--- |
+| `ocrtorch-convert` | Convert PaddleOCR 3.x PIR directory or `.npz` weights to `.pt` |
+| `ocrtorch-convert-det` | Convert PP-OCRv6 detection `.npz` weights to `.pt` |
+| `ocrtorch-evaluate` | Evaluate `.pt` checkpoints on CSV or JSONL splits |
+| `ocrtorch-train` | Fine-tune `PP_OCRv6MediumRec` with early stopping & YAML presets |
+| `ocrtorch-predict` | Run end-to-end detection + recognition or `--crop-only` inference |
+| `ocrtorch-colab` | Provision and run TPU fine-tuning on Google Colab |
+
+| Config Preset | Target Backend | Key Defaults |
+| :--- | :--- | :--- |
+| [configs/local_cpu.yaml](configs/local_cpu.yaml) | CPU | `bf16: true`, `batch_size: 64`, `lr: 4e-5` |
+| [configs/local_mps.yaml](configs/local_mps.yaml) | Apple Silicon MPS | `bf16: false`, `batch_size: 64`, `lr: 4e-5` |
+| [configs/tpu_v6e.yaml](configs/tpu_v6e.yaml) | Cloud TPU (`TorchTPU`) | `bf16: true`, `max_target_len: 40`, `drop_last: true` |
 
 ---
 
 ## Numerical Parity Verification
 
-OCRtorch is verified against reference activations across all 16 intermediate stages in `tests/test_parity.py`:
+OCRtorch is verified against Paddle reference activations across all 16 intermediate stages in [tests/test_parity.py](tests/test_parity.py):
 
 | Stage | Output Shape | Max Absolute Diff | Mean Absolute Diff |
 | :--- | :---: | :---: | :---: |
@@ -189,19 +237,31 @@ OCRtorch is verified against reference activations across all 16 intermediate st
 
 ## Testing
 
-Run the full unit, parity, and cloud-orchestration test suite:
+Run the full test suite (requires `[dev,cloud]` extras and parity artifacts):
 
 ```bash
 pytest tests/ -v
+```
+
+Or run the core unit tests in a minimal `torch-tpu` environment:
+
+```bash
+pytest tests/ \
+  --ignore=tests/test_colab_launcher.py \
+  --ignore=tests/test_evaluate_gemini.py \
+  --ignore=tests/test_pipeline.py \
+  --ignore=tests/test_parity.py \
+  -k "not test_gcs_client_tracks_token_expiry_and_consumes_secrets_from_config and not test_det_forward_shape_and_range" \
+  -v
 ```
 
 ---
 
 ## Contributing
 
-Contributions are welcome. If you plan to add a feature, fix an operator mismatch, or benchmark another backend:
+Contributions are welcome! Whether you are fixing an operator mismatch, adding a benchmark, or extending backend support:
 
 1. Open an issue to discuss the proposed change or report a bug.
 2. Fork the repository and create a focused feature branch.
-3. Add or update tests in `tests/` and verify that `pytest tests/ -v` passes.
-4. Submit a pull request with a clear summary of your changes and any relevant benchmark or parity results.
+3. Add or update tests in `tests/` and verify that `pytest` passes.
+4. Open a pull request with a clear summary of your changes and any relevant benchmark or parity results.

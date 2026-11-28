@@ -1,4 +1,4 @@
-"""CLI for running the Buku KIA PP-OCRv6 detection + routed recognition pipeline."""
+"""CLI for running the PP-OCRv6 detection + routed recognition pipeline."""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ from typing import Sequence
 from PIL import Image
 
 from ocrtorch.cli.train import get_default_device
-from ocrtorch.pipeline.engine import BukuKIAPipeline, RoutedOCRRecognizer
+from ocrtorch.pipeline.engine import OCRPipeline, RoutedOCRRecognizer
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run Buku KIA PP-OCRv6 end-to-end or crop-level OCR")
+    parser = argparse.ArgumentParser(description="Run PP-OCRv6 end-to-end or crop-level OCR")
     parser.add_argument("--image", type=Path, required=True, help="Input full-page image or single crop image")
     parser.add_argument("--inference-yaml", type=Path, required=True, help="Path to Paddle inference.yml")
     parser.add_argument(
@@ -92,7 +92,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         }
     else:
         roi_config = json.loads(args.roi_json.read_text(encoding="utf-8")) if args.roi_json else None
-        pipeline = BukuKIAPipeline.from_checkpoints(
+        pipeline = OCRPipeline.from_checkpoints(
             det_checkpoint=args.det_checkpoint,
             base_rec_checkpoint=args.rec_checkpoint,
             inference_yaml=args.inference_yaml,

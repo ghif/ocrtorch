@@ -8,14 +8,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 VENV_DIR="${VENV_DIR:-${REPO_ROOT}/.venv}"
-TPU_DATA_DIR="${TPU_DATA_DIR:-${HOME}/ocrtorch_tpu_data}"
+CONDA_ENV="${CONDA_ENV:-torch-tpu}"
+TPU_DATA_DIR="${TPU_DATA_DIR:-${REPO_ROOT}/data/tpu}"
 OUTPUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/artifacts/checkpoints/finetuned_tpu_v6e}"
 OUTPUT_GCS="${OUTPUT_GCS:-}"
 
-if [[ -z "${VIRTUAL_ENV:-}" && -d "${VENV_DIR}" ]]; then
-  # shellcheck disable=SC1091
-  source "${VENV_DIR}/bin/activate"
-fi
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/_activate_env.sh"
+activate_ocrtorch_env "${REPO_ROOT}" || true
 
 CHECKPOINT_PATH="${TPU_DATA_DIR}/model-dir/ppocrv6_medium_rec.pt"
 INFERENCE_YAML="${TPU_DATA_DIR}/model-dir/inference.yml"

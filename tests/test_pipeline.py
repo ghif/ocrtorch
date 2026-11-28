@@ -1,4 +1,4 @@
-"""Tests for BukuKIAPipeline, RoutedOCRRecognizer, and ROI field routing."""
+"""Tests for OCRPipeline, RoutedOCRRecognizer, and ROI field routing."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import torch
 
 from ocrtorch.models.ppocrv6 import PP_OCRv6MediumRec
 from ocrtorch.models.ppocrv6_det import PP_OCRv6MediumDet
-from ocrtorch.pipeline.engine import BukuKIAPipeline, RoutedOCRRecognizer, match_box_to_roi
+from ocrtorch.pipeline.engine import OCRPipeline, RoutedOCRRecognizer, match_box_to_roi
 
 
 def _constant_rec_model(target_token_id: int, num_classes: int = 6) -> PP_OCRv6MediumRec:
@@ -68,7 +68,7 @@ def test_match_box_to_roi():
     assert match_box_to_roi(box_other, (1000, 1000), roi_cfg) is None
 
 
-def test_bukukia_pipeline_process_page_smoke():
+def test_ocr_pipeline_process_page_smoke():
     det_model = PP_OCRv6MediumDet()
     rec_base = _constant_rec_model(target_token_id=1, num_classes=6)
     rec_p3 = _constant_rec_model(target_token_id=2, num_classes=6)
@@ -78,7 +78,7 @@ def test_bukukia_pipeline_process_page_smoke():
         device="cpu",
         page3_model=rec_p3,
     )
-    pipeline = BukuKIAPipeline(det_model=det_model, recognizer=recognizer)
+    pipeline = OCRPipeline(det_model=det_model, recognizer=recognizer)
 
     img = Image.new("RGB", (128, 128), color=(255, 255, 255))
     result = pipeline.process_page(img, page_id="page3")

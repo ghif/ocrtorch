@@ -232,7 +232,7 @@ def main():
     ckpt_path = Path(args.checkpoint)
     if ckpt_path.exists():
         print(f"Loading pretrained weights from {ckpt_path}...")
-        state_dict = torch.load(ckpt_path, weights_only=True)
+        state_dict = torch.load(ckpt_path, map_location="cpu", weights_only=True)
         model.load_state_dict(state_dict, strict=False)
     else:
         print(f"[Warning] Checkpoint {ckpt_path} not found, initializing from scratch.")
